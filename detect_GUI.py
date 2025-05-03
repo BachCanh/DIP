@@ -3,1261 +3,958 @@ import cv2
 import time
 import threading
 import tkinter as tk
-from tkinter import filedialog, ttk, messagebox, StringVar
+from tkinter import filedialog, ttk, messagebox, StringVar, font as tkFont
 from PIL import Image, ImageTk
+import torch
 from ultralytics import YOLO
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import pandas as pd
-import csv
-from datetime import datetime
 import json
+from datetime import datetime
 
 class YOLODetectionApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Advanced YOLOv8 Object Detection Suite")
-        self.root.geometry("1200x800")
+        self.root.title("Final Project: Car Detection")
+        self.root.geometry("1280x850") # Slightly larger for better spacing
         self.root.configure(bg="#f0f0f0")
-        
-        # Load YOLOv8 model
+        # Initialize variables first
+        self.status_var = tk.StringVar()  # Add this line before using status_var
+
+        # --- Style Configuration ---
+        self.setup_styles()
+
+        # Create banner frame for project info
+        self.create_banner_frame()
+
+       # --- Check GPU availability ---
+        self.device = "cpu"
+        if torch.cuda.is_available():
+            self.device = "cuda"
+            gpu_name = torch.cuda.get_device_name(0)
+            gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            self.status_var.set(f"GPU detected: {gpu_name} ({gpu_memory:.2f} GB)")
+            print(f"Using GPU: {gpu_name}")
+        else:
+            self.status_var.set("No GPU detected. Using CPU.")
+            print("No GPU available. Using CPU.")
+            
+        # --- Load YOLOv8 model ---
+        # Ensure this path is correct relative to where you run the script
         MODEL_PATH = "runs/train_cars_20250422_090512/yolov8n/weights/best.pt"
-        self.model = YOLO(MODEL_PATH)
-        
-        # Get class names from model
-        self.class_names = self.model.names
-        
-        # Initialize variables
+        try:
+            self.model = YOLO(MODEL_PATH)
+            # Configure the model to use GPU if available
+            self.model.to(self.device)
+            self.class_names = self.model.names
+            print(f"Model loaded successfully on {self.device}")
+        except Exception as e:
+            messagebox.showerror("Model Load Error", f"Failed to load YOLO model from {MODEL_PATH}\nError: {e}\nPlease ensure the path is correct and Ultralytics is installed.")
+            self.root.destroy()
+            return
+
+        # --- Initialize variables ---
         self.cap = None
         self.video_thread = None
         self.running = True
         self.processing_video = False
-        self.detected_objects = {}
-        self.detection_counts = {class_name: 0 for class_name in self.class_names.values()}
+        self.detected_objects = {} # Stores final counts for saving (image or total video)
+        self.detection_counts = {class_name: 0 for class_name in self.class_names.values()} # Accumulates total video counts
         self.confidence_threshold = 0.25
-        self.current_frame = None
-        self.detection_history = []
-        self.recording_data = False
-        self.data_recording_start_time = None
-        
-        # Create main frame with custom styling
-        main_frame = ttk.Frame(root)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        # Create a notebook for tabs with custom styling
-        style = ttk.Style()
-        style.configure("TNotebook", background="#f0f0f0", borderwidth=0)
-        style.configure("TNotebook.Tab", background="#d0d0d0", padding=[10, 5], font=('Arial', 10))
-        style.map("TNotebook.Tab", background=[("selected", "#4a86e8")], foreground=[("selected", "white")])
-        
-        self.notebook = ttk.Notebook(main_frame)
-        self.notebook.pack(fill=tk.BOTH, expand=True)
-        
-        # Create tabs
-        self.image_tab = ttk.Frame(self.notebook)
-        self.video_tab = ttk.Frame(self.notebook)
-        self.camera_tab = ttk.Frame(self.notebook)
-        self.analytics_tab = ttk.Frame(self.notebook)
-        self.settings_tab = ttk.Frame(self.notebook)
-        
-        self.notebook.add(self.image_tab, text="Image Detection")
-        self.notebook.add(self.video_tab, text="Video Detection")
-        self.notebook.add(self.camera_tab, text="Camera Detection")
-        self.notebook.add(self.analytics_tab, text="Analytics")
-        self.notebook.add(self.settings_tab, text="Settings")
-        
+        self.current_frame = None # Holds the last processed frame (image or video) for display/saving
+
+        # Create main frame
+        main_frame = ttk.Frame(root, padding="10 10 10 10", style="Main.TFrame")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Create a notebook for tabs
+        self.notebook = ttk.Notebook(main_frame, style="TNotebook")
+        self.notebook.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
+
+        # Create tabs (frames styled with Main.TFrame)
+        self.image_tab = ttk.Frame(self.notebook, padding="5 5 5 5", style="Main.TFrame")
+        self.video_tab = ttk.Frame(self.notebook, padding="5 5 5 5", style="Main.TFrame")
+        self.settings_tab = ttk.Frame(self.notebook, padding="5 5 5 5", style="Main.TFrame")
+
+        self.notebook.add(self.image_tab, text=" Image Detection ") # Added spaces for padding
+        self.notebook.add(self.video_tab, text=" Video Detection ")
+        self.notebook.add(self.settings_tab, text=" Settings ")
+
         # Setup tabs
         self.setup_image_tab()
         self.setup_video_tab()
-        self.setup_camera_tab()
-        self.setup_analytics_tab()
         self.setup_settings_tab()
-        
+
         # Setup status bar
         self.status_var = StringVar()
         self.status_var.set("Ready")
-        status_bar = ttk.Label(root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
+        status_bar = ttk.Label(root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W, padding="5 2", style="Status.TLabel")
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
-        
+
         # Bind closing event
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
-        
+
         # Load settings if available
         self.load_settings()
-    
+
+    def setup_styles(self):
+        style = ttk.Style(self.root)
+        style.theme_use('clam') # Experiment with 'clam', 'alt', 'default'
+
+        # Define fonts
+        self.default_font = tkFont.nametofont("TkDefaultFont")
+        self.default_font.configure(size=10)
+        self.label_font = tkFont.Font(family="Arial", size=10)
+        self.button_font = tkFont.Font(family="Arial", size=10, weight="bold")
+        self.title_font = tkFont.Font(family="Arial", size=16, weight="bold")
+        self.banner_font = tkFont.Font(family="Arial", size=10)
+        self.status_font = tkFont.Font(family="Arial", size=9)
+
+        # Configure styles
+        bg_color = "#f0f0f0"
+        frame_bg = "#e0e0e0"
+        accent_color = "#4a86e8"
+        text_color = "#333333"
+        button_fg = "white"
+
+        style.configure(".", font=self.default_font, background=bg_color, foreground=text_color) # Global default
+
+        style.configure("TFrame", background=bg_color)
+        style.configure("Main.TFrame", background=bg_color) # Specific frame style if needed
+
+        style.configure("TLabel", padding="5 5", font=self.label_font, background=bg_color)
+        style.configure("Status.TLabel", font=self.status_font, background="#d0d0d0", foreground="#333333")
+        style.configure("Conf.TLabel", font=self.label_font, background=frame_bg) # For confidence label
+
+        style.configure("TButton", padding="8 4", font=self.button_font, foreground=button_fg, background=accent_color)
+        style.map("TButton",
+                  background=[('active', '#6faa Rfr') , ('pressed', '#3b6ec2')], # Slightly darker on hover/press
+                  foreground=[('active', 'white')])
+
+        style.configure("TEntry", padding="5 5", font=self.label_font)
+
+        style.configure("TLabelframe", padding="10 10", font=self.label_font, background=frame_bg, relief=tk.GROOVE, borderwidth=1)
+        style.configure("TLabelframe.Label", font=self.label_font, background=frame_bg, foreground=text_color)
+
+        style.configure("TNotebook", background=bg_color, borderwidth=1)
+        style.configure("TNotebook.Tab", padding=[12, 6], font=self.button_font, background="#d0d0d0", foreground="#555555")
+        style.map("TNotebook.Tab",
+                  background=[("selected", accent_color)],
+                  foreground=[("selected", button_fg)])
+
+        style.configure("TScale", background=frame_bg)
+        style.configure("TProgressbar", thickness=20, background=accent_color, troughcolor='#d0d0d0')
+        style.configure("TCheckbutton", background=frame_bg, font=self.label_font) # Ensure checkbuttons match frame bg
+        style.configure("TCombobox", font=self.label_font, padding="5 5")
+
+
+    def create_banner_frame(self):
+        banner_bg = "#1e3c72"
+        banner_fg = "white"
+        banner_frame = tk.Frame(self.root, bg=banner_bg) # Use tk.Frame for simple color bg
+        banner_frame.pack(fill=tk.X, pady=(0, 10))
+
+        # Project title (centered)
+        title_label = tk.Label(banner_frame, text="Car Detection - Final Project",
+                               font=self.title_font, fg=banner_fg, bg=banner_bg)
+        title_label.pack(side=tk.LEFT, padx=30, pady=15, expand=True) # Expand to help center
+
+        # Team members frame
+        team_frame = tk.Frame(banner_frame, bg=banner_bg)
+        team_frame.pack(side=tk.RIGHT, padx=20, pady=10)
+
+        # Team members
+        team_text = (
+            "Team:\n"
+            "Bạch Đức Cảnh (22110012) | Nguyễn Tiến Toàn (22110078)\n"
+            "Lý Đăng Triều (22110080) | Nguyễn Tuấn Vũ (22110091)"
+        )
+        team_label = tk.Label(team_frame, text=team_text, font=self.banner_font,
+                              fg=banner_fg, bg=banner_bg, justify=tk.RIGHT)
+        team_label.pack()
+
     def setup_image_tab(self):
-        # Image file selection frame
-        file_frame = ttk.LabelFrame(self.image_tab, text="Image Source")
-        file_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        ttk.Label(file_frame, text="Select Image File:").pack(side=tk.LEFT, padx=5)
-        
+        # Configure grid columns for expansion
+        self.image_tab.columnconfigure(0, weight=1)
+        self.image_tab.rowconfigure(1, weight=1) # Allow display frame to expand
+
+        # --- Image file selection frame ---
+        file_frame = ttk.LabelFrame(self.image_tab, text="Image Source", padding="10 10")
+        file_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=(5, 10))
+        file_frame.columnconfigure(1, weight=1) # Make entry expand
+
+        ttk.Label(file_frame, text="Select Image:").grid(row=0, column=0, padx=(0, 5), pady=5, sticky="w")
+
         self.image_path_var = tk.StringVar()
-        path_entry = ttk.Entry(file_frame, textvariable=self.image_path_var, width=50)
-        path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        
-        browse_btn = ttk.Button(file_frame, text="Browse", command=self.browse_image)
-        browse_btn.pack(side=tk.LEFT, padx=5)
-        
-        detect_btn = ttk.Button(file_frame, text="Detect", command=self.detect_image)
-        detect_btn.pack(side=tk.LEFT, padx=5)
-        
-        save_btn = ttk.Button(file_frame, text="Save Results", command=lambda: self.save_results("image"))
-        save_btn.pack(side=tk.LEFT, padx=5)
-        
-        # Image display area with information panel
-        display_frame = ttk.Frame(self.image_tab)
-        display_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # Create a PanedWindow for resizable sections
+        path_entry = ttk.Entry(file_frame, textvariable=self.image_path_var, width=60)
+        path_entry.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+
+        browse_btn = ttk.Button(file_frame, text="Browse...", command=self.browse_image)
+        browse_btn.grid(row=0, column=2, padx=5, pady=5)
+
+        detect_btn = ttk.Button(file_frame, text="Detect Objects", command=self.detect_image)
+        detect_btn.grid(row=0, column=3, padx=5, pady=5)
+
+        save_btn = ttk.Button(file_frame, text="Save Result", command=lambda: self.save_results("image"))
+        save_btn.grid(row=0, column=4, padx=5, pady=5)
+
+        # --- Image display area with information panel ---
+        display_frame = ttk.Frame(self.image_tab, style="Main.TFrame") # Use main background
+        display_frame.grid(row=1, column=0, sticky="nsew", padx=5, pady=(0,5))
+
+        # PanedWindow for resizable sections
         paned = ttk.PanedWindow(display_frame, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True)
-        
-        # Left panel - Image display
-        left_frame = ttk.Frame(paned)
-        self.image_display = ttk.Label(left_frame)
-        self.image_display.pack(fill=tk.BOTH, expand=True)
-        
+
+        # Left panel - Image display (add a frame for potential padding/border)
+        left_frame_outer = ttk.Frame(paned, style="Main.TFrame")
+        self.image_display = ttk.Label(left_frame_outer, background='black', anchor=tk.CENTER) # Black background for image area
+        self.image_display.pack(fill=tk.BOTH, expand=True, padx=1, pady=1) # Small padding inside
+
         # Right panel - Detection results
-        right_frame = ttk.LabelFrame(paned, text="Detection Results")
-        self.img_result_text = tk.Text(right_frame, width=40, height=20, wrap=tk.WORD)
+        right_frame = ttk.LabelFrame(paned, text="Detection Results", padding="10 10")
+        self.img_result_text = tk.Text(right_frame, width=35, height=20, wrap=tk.WORD, font=self.label_font, relief=tk.SOLID, borderwidth=1)
         self.img_result_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # Add frames to paned window
-        paned.add(left_frame, weight=3)
+
+        # Add frames to paned window (adjust weight as needed)
+        paned.add(left_frame_outer, weight=3)
         paned.add(right_frame, weight=1)
-    
+
     def setup_video_tab(self):
-        # Video file selection frame
-        file_frame = ttk.LabelFrame(self.video_tab, text="Video Source")
-        file_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        ttk.Label(file_frame, text="Select Video File:").pack(side=tk.LEFT, padx=5)
-        
+        # Configure grid columns/rows
+        self.video_tab.columnconfigure(0, weight=1)
+        self.video_tab.rowconfigure(2, weight=1) # Allow display frame to expand
+
+        # --- Video file selection frame ---
+        file_frame = ttk.LabelFrame(self.video_tab, text="Video Source", padding="10 10")
+        file_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=(5, 10))
+        file_frame.columnconfigure(1, weight=1) # Make entry expand
+
+        ttk.Label(file_frame, text="Select Video:").grid(row=0, column=0, padx=(0, 5), pady=5, sticky="w")
+
         self.video_path_var = tk.StringVar()
-        path_entry = ttk.Entry(file_frame, textvariable=self.video_path_var, width=50)
-        path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        
-        browse_btn = ttk.Button(file_frame, text="Browse", command=self.browse_video)
-        browse_btn.pack(side=tk.LEFT, padx=5)
-        
-        # Control frame
-        ctrl_frame = ttk.Frame(self.video_tab)
-        ctrl_frame.pack(fill=tk.X, padx=5, pady=5)
-        
+        path_entry = ttk.Entry(file_frame, textvariable=self.video_path_var, width=60)
+        path_entry.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+
+        browse_btn = ttk.Button(file_frame, text="Browse...", command=self.browse_video)
+        browse_btn.grid(row=0, column=2, padx=5, pady=5)
+
+        # --- Control frame ---
+        ctrl_frame = ttk.Frame(self.video_tab, padding="5 0", style="Main.TFrame")
+        ctrl_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=(0, 10))
+        ctrl_frame.columnconfigure(3, weight=1) # Make progress bar expand
+
         self.detect_video_btn = ttk.Button(ctrl_frame, text="Start Detection", command=self.start_video_detection)
-        self.detect_video_btn.pack(side=tk.LEFT, padx=5)
-        
+        self.detect_video_btn.grid(row=0, column=0, padx=(0, 5), pady=5)
+
         self.stop_video_btn = ttk.Button(ctrl_frame, text="Stop Detection", command=self.stop_video_detection, state=tk.DISABLED)
-        self.stop_video_btn.pack(side=tk.LEFT, padx=5)
-        
-        self.save_video_btn = ttk.Button(ctrl_frame, text="Save Results", command=lambda: self.save_results("video"))
-        self.save_video_btn.pack(side=tk.LEFT, padx=5)
-        
+        self.stop_video_btn.grid(row=0, column=1, padx=5, pady=5)
+
+        self.save_video_btn = ttk.Button(ctrl_frame, text="Save Last Frame", command=lambda: self.save_results("video"))
+        self.save_video_btn.grid(row=0, column=2, padx=5, pady=5)
+
         # Progress bar
-        self.video_progress = ttk.Progressbar(ctrl_frame, length=300, mode='determinate')
-        self.video_progress.pack(side=tk.LEFT, padx=10, fill=tk.X, expand=True)
-        
-        # Display area with information panel
-        display_frame = ttk.Frame(self.video_tab)
-        display_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # Create a PanedWindow for resizable sections
+        self.video_progress = ttk.Progressbar(ctrl_frame, length=300, mode='determinate', style="TProgressbar")
+        self.video_progress.grid(row=0, column=3, padx=10, pady=5, sticky="ew")
+
+        # --- Display area ---
+        display_frame = ttk.Frame(self.video_tab, style="Main.TFrame")
+        display_frame.grid(row=2, column=0, sticky="nsew", padx=5, pady=(0,5))
+
         paned = ttk.PanedWindow(display_frame, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True)
-        
+
         # Left panel - Video display
-        left_frame = ttk.Frame(paned)
-        self.video_display = ttk.Label(left_frame)
-        self.video_display.pack(fill=tk.BOTH, expand=True)
-        
-        # Right panel - Live stats and controls
-        right_frame = ttk.LabelFrame(paned, text="Live Detection Stats")
-        
-        # Object count display
-        self.video_stats_text = tk.Text(right_frame, width=40, height=15, wrap=tk.WORD)
+        left_frame_outer = ttk.Frame(paned, style="Main.TFrame")
+        self.video_display = ttk.Label(left_frame_outer, background='black', anchor=tk.CENTER)
+        self.video_display.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
+
+        # Right panel - Live stats
+        right_frame = ttk.LabelFrame(paned, text="Live Frame Stats", padding="10 10")
+        self.video_stats_text = tk.Text(right_frame, width=35, height=15, wrap=tk.WORD, font=self.label_font, relief=tk.SOLID, borderwidth=1)
         self.video_stats_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # Record data checkbox
-        self.record_data_var = tk.BooleanVar(value=False)
-        record_check = ttk.Checkbutton(right_frame, text="Record Detection Data", 
-                                     variable=self.record_data_var, 
-                                     command=self.toggle_data_recording)
-        record_check.pack(anchor=tk.W, padx=5, pady=5)
-        
-        # Add frames to paned window
-        paned.add(left_frame, weight=3)
+
+        paned.add(left_frame_outer, weight=3)
         paned.add(right_frame, weight=1)
-    
-    def setup_camera_tab(self):
-        # Camera control frame
-        ctrl_frame = ttk.LabelFrame(self.camera_tab, text="Camera Controls")
-        ctrl_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        # Camera selection
-        ttk.Label(ctrl_frame, text="Camera:").pack(side=tk.LEFT, padx=5)
-        self.camera_id_var = tk.StringVar(value="0")
-        camera_combo = ttk.Combobox(ctrl_frame, textvariable=self.camera_id_var, width=5, 
-                                   values=["0", "1", "2", "3"])
-        camera_combo.pack(side=tk.LEFT, padx=5)
-        
-        self.start_cam_btn = ttk.Button(ctrl_frame, text="Start Camera", command=self.start_camera)
-        self.start_cam_btn.pack(side=tk.LEFT, padx=5)
-        
-        self.stop_cam_btn = ttk.Button(ctrl_frame, text="Stop Camera", command=self.stop_camera, state=tk.DISABLED)
-        self.stop_cam_btn.pack(side=tk.LEFT, padx=5)
-        
-        # Snapshot and recording controls
-        self.snapshot_btn = ttk.Button(ctrl_frame, text="Take Snapshot", command=self.take_snapshot, state=tk.DISABLED)
-        self.snapshot_btn.pack(side=tk.LEFT, padx=5)
-        
-        self.record_btn = ttk.Button(ctrl_frame, text="Start Recording", command=self.toggle_recording, state=tk.DISABLED)
-        self.record_btn.pack(side=tk.LEFT, padx=5)
-        
-        # FPS display
-        self.fps_var = StringVar(value="FPS: 0")
-        fps_label = ttk.Label(ctrl_frame, textvariable=self.fps_var)
-        fps_label.pack(side=tk.RIGHT, padx=10)
-        
-        # Display area with information panel
-        display_frame = ttk.Frame(self.camera_tab)
-        display_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # Create a PanedWindow for resizable sections
-        paned = ttk.PanedWindow(display_frame, orient=tk.HORIZONTAL)
-        paned.pack(fill=tk.BOTH, expand=True)
-        
-        # Left panel - Camera display
-        left_frame = ttk.Frame(paned)
-        self.camera_display = ttk.Label(left_frame)
-        self.camera_display.pack(fill=tk.BOTH, expand=True)
-        
-        # Right panel - Live stats and alerts
-        right_frame = ttk.LabelFrame(paned, text="Live Detection Stats")
-        
-        # Object count display
-        self.camera_stats_text = tk.Text(right_frame, width=40, height=15, wrap=tk.WORD)
-        self.camera_stats_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # Alert settings
-        alert_frame = ttk.LabelFrame(right_frame, text="Detection Alerts")
-        alert_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        # Alert for specific class
-        ttk.Label(alert_frame, text="Alert on:").pack(side=tk.LEFT, padx=5)
-        self.alert_class_var = StringVar()
-        alert_combo = ttk.Combobox(alert_frame, textvariable=self.alert_class_var, 
-                                 values=list(self.class_names.values()), width=15)
-        alert_combo.pack(side=tk.LEFT, padx=5)
-        
-        self.alert_enabled_var = tk.BooleanVar(value=False)
-        alert_check = ttk.Checkbutton(alert_frame, text="Enable Alert", 
-                                    variable=self.alert_enabled_var)
-        alert_check.pack(side=tk.LEFT, padx=5)
-        
-        # Record data checkbox
-        self.cam_record_data_var = tk.BooleanVar(value=False)
-        record_check = ttk.Checkbutton(right_frame, text="Record Detection Data", 
-                                     variable=self.cam_record_data_var,
-                                     command=self.toggle_data_recording)
-        record_check.pack(anchor=tk.W, padx=5, pady=5)
-        
-        # Add frames to paned window
-        paned.add(left_frame, weight=3)
-        paned.add(right_frame, weight=1)
-        
-        # Recording variables
-        self.is_recording = False
-        self.video_writer = None
-        self.last_frame_time = 0
-        self.frame_times = []
-    
-    def setup_analytics_tab(self):
-        # Analytics tab with data visualization
-        top_frame = ttk.Frame(self.analytics_tab)
-        top_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        ttk.Label(top_frame, text="Detection Analytics", font=("Arial", 16)).pack(side=tk.LEFT, padx=5)
-        
-        ttk.Button(top_frame, text="Refresh Data", command=self.update_analytics).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(top_frame, text="Export Analytics", command=self.export_analytics).pack(side=tk.RIGHT, padx=5)
-        
-        # Create tabs for different analytics views
-        analytics_notebook = ttk.Notebook(self.analytics_tab)
-        analytics_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # Summary tab
-        summary_tab = ttk.Frame(analytics_notebook)
-        
-        # Object counts chart frame
-        chart_frame = ttk.LabelFrame(summary_tab, text="Detection Count by Class")
-        chart_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # Create a figure for the chart
-        self.analytics_figure, self.analytics_ax = plt.subplots(figsize=(8, 4))
-        self.analytics_canvas = FigureCanvasTkAgg(self.analytics_figure, master=chart_frame)
-        self.analytics_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        
-        # Timeline tab
-        timeline_tab = ttk.Frame(analytics_notebook)
-        
-        # Timeline chart frame
-        timeline_frame = ttk.LabelFrame(timeline_tab, text="Detection Timeline")
-        timeline_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # Create a figure for the timeline
-        self.timeline_figure, self.timeline_ax = plt.subplots(figsize=(8, 4))
-        self.timeline_canvas = FigureCanvasTkAgg(self.timeline_figure, master=timeline_frame)
-        self.timeline_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        
-        # Add tabs to analytics notebook
-        analytics_notebook.add(summary_tab, text="Summary")
-        analytics_notebook.add(timeline_tab, text="Timeline")
-        
-        # Initialize with empty data
-        self.update_analytics()
-    
+
+
     def setup_settings_tab(self):
-        # Settings tab
-        settings_frame = ttk.LabelFrame(self.settings_tab, text="Detection Settings")
+        settings_scroll_frame = tk.Frame(self.settings_tab, bg=self.root.cget('bg')) # Match root bg
+        settings_scroll_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Create a canvas and a vertical scrollbar for scrolling the settings
+        canvas = tk.Canvas(settings_scroll_frame, bg=self.root.cget('bg'), highlightthickness=0)
+        scrollbar = ttk.Scrollbar(settings_scroll_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas, style="Main.TFrame") # Use the styled frame
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(
+                scrollregion=canvas.bbox("all")
+            )
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # --- Detection Settings ---
+        settings_frame = ttk.LabelFrame(scrollable_frame, text="Detection Settings", padding="15 15")
         settings_frame.pack(fill=tk.X, padx=10, pady=10, anchor=tk.N)
-        
+        settings_frame.columnconfigure(1, weight=1) # Allow scale/combobox to expand slightly
+
         # Confidence threshold
-        ttk.Label(settings_frame, text="Confidence Threshold:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
-        
+        ttk.Label(settings_frame, text="Confidence Threshold:").grid(row=0, column=0, padx=5, pady=10, sticky=tk.W)
         self.conf_scale = ttk.Scale(settings_frame, from_=0.1, to=1.0, length=300,
-                                  command=self.update_conf_display)
+                                    orient=tk.HORIZONTAL, command=self.update_conf_display)
         self.conf_scale.set(self.confidence_threshold)
-        self.conf_scale.grid(row=0, column=1, padx=5, pady=5)
-        
-        self.conf_label = ttk.Label(settings_frame, text=f"{self.confidence_threshold:.2f}")
-        self.conf_label.grid(row=0, column=2, padx=5, pady=5)
-        
-        # Model selection
-        ttk.Label(settings_frame, text="Model Type:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
-        
-        self.model_var = StringVar(value="YOLOv8n")
-        model_combo = ttk.Combobox(settings_frame, textvariable=self.model_var, 
-                                  values=["YOLOv8n", "YOLOv8s", "YOLOv8m", "YOLOv8l", "YOLOv8x"])
-        model_combo.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
-        
-        # Class selection for filtering
-        ttk.Label(settings_frame, text="Classes to Detect:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.NW)
-        
-        # Create a frame for checkboxes
-        class_frame = ttk.Frame(settings_frame)
-        class_frame.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
-        
-        # Create checkboxes for each class
+        self.conf_scale.grid(row=0, column=1, padx=5, pady=10, sticky=tk.EW)
+        self.conf_label = ttk.Label(settings_frame, text=f"{self.confidence_threshold:.2f}", style="Conf.TLabel", width=5) # Fixed width
+        self.conf_label.grid(row=0, column=2, padx=5, pady=10)
+
+        # Model selection (Note: Reloading model based on this is not implemented)
+        ttk.Label(settings_frame, text="Model Type:").grid(row=1, column=0, padx=5, pady=10, sticky=tk.W)
+        self.model_var = StringVar(value="YOLOv8n (Loaded)") # Indicate loaded model
+        model_combo = ttk.Combobox(settings_frame, textvariable=self.model_var, state="readonly", # Make readonly as switching isn't implemented
+                                   values=["YOLOv8n (Loaded)", "YOLOv8s", "YOLOv8m", "YOLOv8l", "YOLOv8x"])
+        model_combo.grid(row=1, column=1, columnspan=2, padx=5, pady=10, sticky=tk.W)
+        # TODO: Add functionality to reload the model when selection changes if desired.
+
+        # --- Class selection for filtering ---
+        ttk.Label(settings_frame, text="Filter Classes:").grid(row=2, column=0, padx=5, pady=10, sticky=tk.NW)
+        class_frame = ttk.Frame(settings_frame, style="TLabelframe") # Use frame background for checkboxes
+        class_frame.grid(row=2, column=1, columnspan=2, padx=5, pady=10, sticky=tk.W)
+
         self.class_vars = {}
+        num_cols = 4 # Adjust columns for checkboxes
         row, col = 0, 0
         for idx, class_name in self.class_names.items():
             self.class_vars[idx] = tk.BooleanVar(value=True)
-            cb = ttk.Checkbutton(class_frame, text=class_name, variable=self.class_vars[idx])
-            cb.grid(row=row, column=col, padx=5, pady=2, sticky=tk.W)
+            cb = ttk.Checkbutton(class_frame, text=class_name.capitalize(), variable=self.class_vars[idx])
+            cb.grid(row=row, column=col, padx=5, pady=3, sticky=tk.W)
             col += 1
-            if col > 2:  # 3 columns of checkboxes
+            if col >= num_cols:
                 col = 0
                 row += 1
-        
-        # Save/Apply settings
-        ttk.Button(settings_frame, text="Apply Settings", command=self.apply_settings).grid(row=3, column=0, padx=5, pady=15)
-        ttk.Button(settings_frame, text="Save Settings", command=self.save_settings).grid(row=3, column=1, padx=5, pady=15)
-        ttk.Button(settings_frame, text="Reset to Defaults", command=self.reset_settings).grid(row=3, column=2, padx=5, pady=15)
-        
-        # Output directory settings
-        output_frame = ttk.LabelFrame(self.settings_tab, text="Output Settings")
-        output_frame.pack(fill=tk.X, padx=10, pady=10, anchor=tk.N)
-        
-        ttk.Label(output_frame, text="Output Directory:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
-        
-        self.output_dir_var = StringVar(value="./output")
-        output_entry = ttk.Entry(output_frame, textvariable=self.output_dir_var, width=50)
-        output_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
-        
-        ttk.Button(output_frame, text="Browse", command=self.browse_output_dir).grid(row=0, column=2, padx=5, pady=5)
-        
-        # About section
-        about_frame = ttk.LabelFrame(self.settings_tab, text="About")
-        about_frame.pack(fill=tk.X, padx=10, pady=10, anchor=tk.N)
-        
-        about_text = """Advanced YOLOv8 Object Detection Suite
-Version 1.0.0
-Built with YOLOv8 and Tkinter
 
-This application provides powerful tools for object detection in images,
-videos, and live camera feeds with comprehensive analytics and customizable settings.
+        # --- Buttons for Settings ---
+        button_frame = ttk.Frame(settings_frame, style="TLabelframe") # Use frame background
+        button_frame.grid(row=3, column=0, columnspan=3, pady=15)
+
+        ttk.Button(button_frame, text="Apply Settings", command=self.apply_settings).pack(side=tk.LEFT, padx=10)
+        ttk.Button(button_frame, text="Save Settings", command=self.save_settings).pack(side=tk.LEFT, padx=10)
+        ttk.Button(button_frame, text="Reset Defaults", command=self.reset_settings).pack(side=tk.LEFT, padx=10)
+
+
+        # --- Output directory settings ---
+        output_frame = ttk.LabelFrame(scrollable_frame, text="Output Settings", padding="15 15")
+        output_frame.pack(fill=tk.X, padx=10, pady=10, anchor=tk.N)
+        output_frame.columnconfigure(1, weight=1) # Make entry expand
+
+        ttk.Label(output_frame, text="Output Directory:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        self.output_dir_var = StringVar(value="./output")
+        output_entry = ttk.Entry(output_frame, textvariable=self.output_dir_var, width=60)
+        output_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
+        ttk.Button(output_frame, text="Browse...", command=self.browse_output_dir).grid(row=0, column=2, padx=5, pady=5)
+
+
+        # --- About section ---
+        about_frame = ttk.LabelFrame(scrollable_frame, text="About", padding="15 15")
+        about_frame.pack(fill=tk.X, padx=10, pady=10, anchor=tk.N)
+
+        about_text = """YOLO Object Detection App - v1.1
+---------------------------------------
+Built with YOLOv8 and Tkinter.
+
+Detects objects in images and videos using a trained YOLO model.
+Features include confidence adjustment, class filtering, and results saving.
+
+Ho Chi Minh City University of Technology and Education
+Faculty of Electrical and Electronics Engineering
+Department of Computer Engineering
+Final Project - Computer Vision
 """
-        about_label = ttk.Label(about_frame, text=about_text, justify=tk.LEFT)
-        about_label.pack(padx=10, pady=10)
-    
+        about_label = ttk.Label(about_frame, text=about_text, justify=tk.LEFT, style="TLabelframe.Label") # Match frame style
+        about_label.pack(padx=10, pady=10, anchor=tk.W)
+
     def update_conf_display(self, value):
+        # Callback for confidence scale
         conf = float(value)
         self.conf_label.config(text=f"{conf:.2f}")
-        self.confidence_threshold = conf
-    
+        # No need to set self.confidence_threshold here, apply_settings does that if needed.
+
     def apply_settings(self):
-        # Apply settings without saving
+        # Apply settings immediately without saving to file
         self.confidence_threshold = self.conf_scale.get()
-        self.status_var.set(f"Settings applied. Confidence threshold: {self.confidence_threshold:.2f}")
-    
+        # Add logic here if model switching was implemented
+        self.status_var.set(f"Settings applied. Confidence: {self.confidence_threshold:.2f}. Output: {self.output_dir_var.get()}")
+        messagebox.showinfo("Settings Applied", "Current detection settings have been updated.")
+
+
     def save_settings(self):
-        # Save settings to a file
+        # Apply current settings from UI first
+        self.confidence_threshold = self.conf_scale.get()
+
         settings = {
             "confidence_threshold": self.confidence_threshold,
-            "model_type": self.model_var.get(),
+            "model_type": self.model_var.get(), # Save selected model name
             "output_directory": self.output_dir_var.get(),
-            "classes": {idx: var.get() for idx, var in self.class_vars.items()}
+            # Store class filter settings (using int keys for JSON compatibility if needed)
+            "classes": {str(idx): var.get() for idx, var in self.class_vars.items()}
         }
-        
+
         try:
-            os.makedirs("./config", exist_ok=True)
-            with open("./config/settings.json", "w") as f:
+            config_dir = "./config"
+            os.makedirs(config_dir, exist_ok=True)
+            settings_path = os.path.join(config_dir, "settings.json")
+            with open(settings_path, "w") as f:
                 json.dump(settings, f, indent=4)
-            self.status_var.set("Settings saved successfully")
+            self.status_var.set(f"Settings saved successfully to {settings_path}")
+            messagebox.showinfo("Settings Saved", f"Settings saved to {settings_path}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save settings: {str(e)}")
-    
+            self.status_var.set(f"Error saving settings: {str(e)}")
+
     def load_settings(self):
-        # Load settings from file
+        settings_path = "./config/settings.json"
         try:
-            if os.path.exists("./config/settings.json"):
-                with open("./config/settings.json", "r") as f:
+            if os.path.exists(settings_path):
+                with open(settings_path, "r") as f:
                     settings = json.load(f)
-                
+
                 # Apply loaded settings
                 self.confidence_threshold = settings.get("confidence_threshold", 0.25)
                 self.conf_scale.set(self.confidence_threshold)
-                self.update_conf_display(self.confidence_threshold)
-                
-                self.model_var.set(settings.get("model_type", "YOLOv8n"))
+                self.update_conf_display(self.confidence_threshold) # Update label too
+
+                # Note: Model loading based on 'model_type' is not implemented here.
+                # self.model_var.set(settings.get("model_type", "YOLOv8n (Loaded)"))
+
                 self.output_dir_var.set(settings.get("output_directory", "./output"))
-                
-                # Apply class settings if they exist
-                if "classes" in settings:
-                    for idx, value in settings["classes"].items():
-                        if int(idx) in self.class_vars:
-                            self.class_vars[int(idx)].set(value)
-                
+
+                # Apply class filter settings
+                loaded_classes = settings.get("classes", {})
+                for idx_str, value in loaded_classes.items():
+                    try:
+                        idx = int(idx_str)
+                        if idx in self.class_vars:
+                            self.class_vars[idx].set(bool(value))
+                    except ValueError:
+                         print(f"Warning: Invalid class index '{idx_str}' in settings file.")
+
+
                 self.status_var.set("Settings loaded successfully")
+            else:
+                 self.status_var.set("Settings file not found. Using defaults.")
+                 self.reset_settings(show_message=False) # Apply defaults if no file
+
+        except json.JSONDecodeError as e:
+            messagebox.showerror("Settings Load Error", f"Error decoding settings file: {settings_path}\n{e}")
+            self.status_var.set(f"Error loading settings file: {e}")
+            self.reset_settings(show_message=False) # Reset on bad file
         except Exception as e:
+            messagebox.showerror("Settings Load Error", f"Failed to load settings: {str(e)}")
             self.status_var.set(f"Failed to load settings: {str(e)}")
-    
-    def reset_settings(self):
-        # Reset to default settings
-        self.confidence_threshold = 0.25
-        self.conf_scale.set(self.confidence_threshold)
-        self.update_conf_display(self.confidence_threshold)
-        
-        self.model_var.set("YOLOv8n")
+            self.reset_settings(show_message=False) # Reset on other errors
+
+    def reset_settings(self, show_message=True):
+        # Reset UI elements to defaults
+        default_conf = 0.25
+        self.conf_scale.set(default_conf)
+        self.update_conf_display(default_conf)
+        self.confidence_threshold = default_conf # Also update the internal variable
+
+        # self.model_var.set("YOLOv8n (Loaded)") # Reset model display
         self.output_dir_var.set("./output")
-        
+
         # Reset all class checkboxes to True
         for var in self.class_vars.values():
             var.set(True)
-        
+
         self.status_var.set("Settings reset to defaults")
-    
+        if show_message:
+            messagebox.showinfo("Settings Reset", "All settings have been reset to their default values.")
+
+
     def browse_output_dir(self):
-        directory = filedialog.askdirectory(title="Select Output Directory")
+        directory = filedialog.askdirectory(title="Select Output Directory", initialdir=self.output_dir_var.get())
         if directory:
             self.output_dir_var.set(directory)
-    
+            self.status_var.set(f"Output directory set to: {directory}")
+
     def browse_image(self):
         file_path = filedialog.askopenfilename(
-            title="Select Image",
-            filetypes=(("Image Files", "*.png *.jpg *.jpeg"), ("All Files", "*.*"))
+            title="Select Image File",
+            filetypes=(("Image Files", "*.png *.jpg *.jpeg *.bmp *.webp"), ("All Files", "*.*"))
         )
         if file_path:
             self.image_path_var.set(file_path)
             self.status_var.set(f"Image selected: {os.path.basename(file_path)}")
-    
+            # Optionally display the selected image immediately (without detection)
+            self.display_image(file_path)
+            self.img_result_text.delete(1.0, tk.END) # Clear previous results
+
     def browse_video(self):
         file_path = filedialog.askopenfilename(
-            title="Select Video",
-            filetypes=(("Video Files", "*.mp4 *.avi *.mov"), ("All Files", "*.*"))
+            title="Select Video File",
+            filetypes=(("Video Files", "*.mp4 *.avi *.mov *.mkv"), ("All Files", "*.*"))
         )
         if file_path:
             self.video_path_var.set(file_path)
             self.status_var.set(f"Video selected: {os.path.basename(file_path)}")
-    
-    def detect_image(self):
-        img_path = self.image_path_var.get()
-        if os.path.exists(img_path):
-            self.status_var.set("Processing image...")
-            
-            # Get selected classes
-            selected_classes = [int(idx) for idx, var in self.class_vars.items() if var.get()]
-            
-            # Reset detection counts
-            self.detection_counts = {class_name: 0 for class_name in self.class_names.values()}
-            
-            # Perform detection
-            results = self.model.predict(
-                source=img_path, 
-                conf=self.confidence_threshold,
-                imgsz=640,
-                classes=selected_classes
-            )
-            annotated = results[0].plot()
-            
-            # Update detection counts
-            for box in results[0].boxes:
-                cls_id = int(box.cls[0])
-                cls_name = self.class_names[cls_id]
-                if cls_name in self.detection_counts:
-                    self.detection_counts[cls_name] += 1
-            
-            # Save the detection results for later use
-            self.current_frame = annotated
-            self.detected_objects = self.detection_counts.copy()
-            
-            # Convert OpenCV image (BGR) to PIL Image (RGB)
-            annotated = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-            pil_img = Image.fromarray(annotated)
-            
-            # Resize while keeping aspect ratio
-            display_width = 800
-            ratio = display_width / pil_img.width
-            display_height = int(pil_img.height * ratio)
-            pil_img = pil_img.resize((display_width, display_height), Image.LANCZOS)
-            
+            # Clear previous video display and stats
+            self.video_display.configure(image=None)
+            self.video_display.image = None
+            self.video_stats_text.delete(1.0, tk.END)
+            self.video_progress["value"] = 0
+
+
+    def display_image(self, img_path_or_array, is_detected=False):
+        """ Helper to display an image (from path or numpy array) """
+        try:
+            if isinstance(img_path_or_array, str): # If it's a path, load it
+                img = cv2.imread(img_path_or_array)
+                if img is None:
+                    raise ValueError(f"Could not read image file: {img_path_or_array}")
+            else: # Assume it's a numpy array (already loaded/processed)
+                img = img_path_or_array
+
+            # Convert BGR (OpenCV) to RGB (PIL)
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(img_rgb)
+
+            # Resize for display, maintaining aspect ratio
+            # Get the display widget's size for better fitting
+            widget_width = self.image_display.winfo_width()
+            widget_height = self.image_display.winfo_height()
+
+            # Fallback size if widget size not available yet
+            if widget_width <= 1: widget_width = 800
+            if widget_height <= 1: widget_height = 600
+
+            img_width, img_height = pil_img.size
+            ratio = min(widget_width / img_width, widget_height / img_height)
+            new_width = int(img_width * ratio)
+            new_height = int(img_height * ratio)
+
+            # Only resize if needed (don't upscale small images too much unless necessary)
+            if new_width < img_width or new_height < img_height or not is_detected : # Resize detected or if original is larger than display
+                pil_img = pil_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+
             # Convert to PhotoImage
             img_tk = ImageTk.PhotoImage(pil_img)
-            
+
             # Update display
             self.image_display.configure(image=img_tk)
-            self.image_display.image = img_tk  # Keep a reference
-            
-            # Update results text
-            self.img_result_text.delete(1.0, tk.END)
-            self.img_result_text.insert(tk.END, "Detection Results:\n\n")
-            
-            # Add detection summary
-            for class_name, count in self.detection_counts.items():
-                if count > 0:
-                    self.img_result_text.insert(tk.END, f"{class_name}: {count}\n")
-            
-            # Add confidence scores
-            self.img_result_text.insert(tk.END, "\nConfidence Scores:\n")
+            self.image_display.image = img_tk  # Keep a reference!
+            if not is_detected:
+                 self.current_frame = img # Store original cv2 image if just displaying
+            else:
+                 self.current_frame = img # Store detected cv2 image
+
+        except FileNotFoundError:
+             messagebox.showerror("Error", f"Image file not found: {img_path_or_array}")
+             self.status_var.set("Error: Image file not found.")
+        except ValueError as ve:
+            messagebox.showerror("Error", str(ve))
+            self.status_var.set(f"Error: {ve}")
+        except Exception as e:
+            messagebox.showerror("Image Display Error", f"Failed to display image.\nError: {e}")
+            self.status_var.set(f"Error displaying image: {e}")
+
+    def detect_image(self):
+        img_path = self.image_path_var.get()
+        if not img_path or not os.path.exists(img_path):
+            messagebox.showerror("Error", "Please select a valid image file first.")
+            return
+
+        self.status_var.set("Processing image...")
+        self.root.update_idletasks() # Update GUI to show status
+
+        # Get selected classes to detect based on checkboxes
+        selected_classes_idx = [idx for idx, var in self.class_vars.items() if var.get()]
+        if not selected_classes_idx:
+            messagebox.showwarning("No Classes Selected", "Please select at least one class to detect in the Settings tab.")
+            self.status_var.set("Ready")
+            return
+
+        # Reset detection counts for this specific image run
+        image_detection_counts = {class_name: 0 for class_name in self.class_names.values()}
+        confidence_scores = [] # Store confidences for this image
+
+        try:
+            # Perform detection
+            results = self.model.predict(
+                source=img_path,
+                conf=self.confidence_threshold,
+                imgsz=640,
+                classes=selected_classes_idx # Filter by selected classes
+            )
+
+            # Check if results were found
+            if not results or len(results) == 0 or results[0].boxes is None:
+                 messagebox.showinfo("Detection", "No objects detected in the image with the current settings.")
+                 self.status_var.set("Image processed. No objects found.")
+                 self.display_image(img_path) # Show original image
+                 self.img_result_text.delete(1.0, tk.END)
+                 self.img_result_text.insert(tk.END, "No objects detected.")
+                 self.detected_objects = {} # Clear previous results
+                 return
+
+
+            annotated_frame = results[0].plot() # Get the annotated image (numpy array)
+
+            # Update detection counts and collect scores for this image
             for box in results[0].boxes:
                 cls_id = int(box.cls[0])
-                cls_name = self.class_names[cls_id]
+                cls_name = self.class_names.get(cls_id, f"Unknown({cls_id})")
                 conf = float(box.conf[0])
-                self.img_result_text.insert(tk.END, f"{cls_name}: {conf:.2f}\n")
-            
-            self.status_var.set(f"Image processed. Found {sum(self.detection_counts.values())} objects.")
-            
-            # Add to detection history
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.detection_history.append({
-                "timestamp": timestamp,
-                "source": "image",
-                "filename": os.path.basename(img_path),
-                "counts": self.detection_counts.copy()
-            })
-    
+
+                if cls_name in image_detection_counts: # Should always be true if class_names is correct
+                    image_detection_counts[cls_name] += 1
+                confidence_scores.append((cls_name, conf))
+
+
+            # --- Update GUI ---
+            # Display the annotated image
+            self.display_image(annotated_frame, is_detected=True)
+
+            # Update results text
+            self.img_result_text.delete(1.0, tk.END)
+            self.img_result_text.insert(tk.END, "--- Detection Summary ---\n\n")
+            total_detections = 0
+            for class_name, count in image_detection_counts.items():
+                if count > 0:
+                    self.img_result_text.insert(tk.END, f"{class_name}: {count}\n")
+                    total_detections += count
+
+            self.img_result_text.insert(tk.END, f"\n--- Total Objects: {total_detections} ---\n")
+
+            # Add confidence scores (optional, can make the box long)
+            # self.img_result_text.insert(tk.END, "\n--- Confidence Scores ---\n")
+            # confidence_scores.sort(key=lambda x: x[1], reverse=True) # Sort by confidence
+            # for name, conf in confidence_scores:
+            #     self.img_result_text.insert(tk.END, f"{name}: {conf:.3f}\n")
+
+            # Store results for potential saving
+            self.detected_objects = image_detection_counts.copy()
+            # self.current_frame is already set by display_image
+
+            self.status_var.set(f"Image processed. Found {total_detections} objects.")
+
+        except Exception as e:
+            messagebox.showerror("Detection Error", f"An error occurred during image detection:\n{e}")
+            self.status_var.set(f"Error during detection: {e}")
+
+
     def start_video_detection(self):
         video_path = self.video_path_var.get()
-        if os.path.exists(video_path) and not self.processing_video:
-            self.processing_video = True
-            self.running = True
-            self.detect_video_btn.configure(state=tk.DISABLED)
-            self.stop_video_btn.configure(state=tk.NORMAL)
-            
-            # Reset detection counts
-            self.detection_counts = {class_name: 0 for class_name in self.class_names.values()}
-            self.video_stats_text.delete(1.0, tk.END)
-            
-            # Get total frames (for progress bar)
-            cap = cv2.VideoCapture(video_path)
-            self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            cap.release()
-            
-            # Reset progress bar
-            self.video_progress["value"] = 0
-            self.video_progress["maximum"] = self.total_frames
-            
-            self.status_var.set(f"Processing video: {os.path.basename(video_path)}")
-            
-            # Start video processing in a separate thread
-            self.video_thread = threading.Thread(target=self.process_video, args=(video_path,), daemon=True)
-            self.video_thread.start()
-            
-            # Start data recording if selected
-            if self.record_data_var.get():
-                self.start_data_recording()
-    
+        if self.processing_video:
+             messagebox.showwarning("Busy", "Video processing is already in progress.")
+             return
+        if not video_path or not os.path.exists(video_path):
+            messagebox.showerror("Error", "Please select a valid video file first.")
+            return
+
+        # Check if classes are selected
+        self.selected_classes_idx_video = [idx for idx, var in self.class_vars.items() if var.get()] # Store for thread
+        if not self.selected_classes_idx_video:
+            messagebox.showwarning("No Classes Selected", "Please select at least one class to detect in the Settings tab.")
+            return
+
+        self.processing_video = True
+        self.running = True # Ensure running flag is true
+        self.detect_video_btn.configure(state=tk.DISABLED)
+        self.stop_video_btn.configure(state=tk.NORMAL)
+        self.save_video_btn.configure(state=tk.DISABLED) # Disable saving until done/stopped
+
+        # Reset TOTAL detection counts for the new video run
+        self.detection_counts = {class_name: 0 for class_name in self.class_names.values()}
+        self.video_stats_text.delete(1.0, tk.END)
+        self.video_stats_text.insert(tk.END, "Starting detection...")
+
+        # Get total frames for progress bar
+        try:
+            temp_cap = cv2.VideoCapture(video_path)
+            if not temp_cap.isOpened():
+                raise IOError(f"Cannot open video file: {video_path}")
+            self.total_frames = int(temp_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            temp_cap.release()
+        except Exception as e:
+            messagebox.showerror("Video Error", f"Could not get video properties.\nError: {e}")
+            self.processing_video = False
+            self.detect_video_btn.configure(state=tk.NORMAL)
+            self.stop_video_btn.configure(state=tk.DISABLED)
+            return
+
+        # Reset progress bar
+        self.video_progress["value"] = 0
+        self.video_progress["maximum"] = self.total_frames if self.total_frames > 0 else 1 # Avoid division by zero
+
+        self.status_var.set(f"Processing video: {os.path.basename(video_path)}")
+
+        # Start video processing in a separate thread
+        # Pass necessary parameters that might change (like conf threshold, classes)
+        self.video_thread = threading.Thread(target=self.process_video,
+                                             args=(video_path, self.confidence_threshold, self.selected_classes_idx_video),
+                                             daemon=True) # Daemon thread exits if main app closes
+        self.video_thread.start()
+
     def stop_video_detection(self):
-        self.running = False
-        self.status_var.set("Video processing stopped")
-        if self.recording_data:
-            self.stop_data_recording()
-    
-    def process_video(self, path):
+        if self.processing_video and self.running:
+            self.running = False # Signal the thread to stop
+            self.status_var.set("Stopping video processing...")
+            self.stop_video_btn.configure(state=tk.DISABLED) # Prevent multiple clicks
+            # The thread will finish its current loop and call on_video_complete/on_video_stop
+            # Wait a short moment for the thread to potentially finish gracefully (optional)
+            # if self.video_thread and self.video_thread.is_alive():
+            #     self.video_thread.join(timeout=1.0) # Wait up to 1 second
+
+    def process_video(self, path, current_conf_threshold, current_selected_classes):
+        """ Video processing function running in a separate thread """
         cap = cv2.VideoCapture(path)
+        if not cap.isOpened():
+             self.root.after(0, lambda: messagebox.showerror("Video Error", f"Cannot open video file in thread: {path}"))
+             self.root.after(0, self.on_video_stop) # Use stop state handler
+             return
+
         frame_count = 0
         start_time = time.time()
-        frame_times = []
-        
-        # Get selected classes
-        selected_classes = [int(idx) for idx, var in self.class_vars.items() if var.get()]
-        
+        # frame_times = [] # Removed FPS calculation from here, moved to main thread update
+
         while self.running and cap.isOpened():
             ret, frame = cap.read()
             if not ret:
+                self.running = False # End of video
                 break
-                
+
             frame_count += 1
-            
-            # Update progress bar every 5 frames to improve performance
-            if frame_count % 5 == 0:
-                self.root.after(1, lambda count=frame_count: self.video_progress.configure(value=count))
-            
-            # Calculate FPS
-            frame_time = time.time()
-            if len(frame_times) > 30:  # Keep only last 30 frames for FPS calculation
-                frame_times.pop(0)
-            frame_times.append(frame_time)
-            
-            # Perform detection
+            loop_start_time = time.time()
+
+            # --- Perform detection ---
             results = self.model.predict(
-                source=frame, 
-                conf=self.confidence_threshold,
+                source=frame,
+                conf=current_conf_threshold, # Use threshold passed at start
                 imgsz=640,
-                classes=selected_classes
+                classes=current_selected_classes, # Use classes passed at start
+                verbose=False # Suppress console output from predict
             )
-            annotated = results[0].plot()
-            
-            # Update detection counts
-            frame_detections = {class_name: 0 for class_name in self.class_names.values()}
-            for box in results[0].boxes:
-                cls_id = int(box.cls[0])
-                cls_name = self.class_names[cls_id]
-                if cls_name in self.detection_counts:
-                    self.detection_counts[cls_name] += 1
-                    frame_detections[cls_name] += 1
-            
-            # Record data if enabled
-            if self.recording_data:
-                timestamp = time.time() - self.data_recording_start_time
-                self.record_detection_data(timestamp, frame_detections, "video")
-            
-            # Save current frame and detections
-            self.current_frame = annotated
-            
-            # Process in main thread to avoid Tkinter threading issues
-            self.root.after(1, self.update_video_display, annotated, frame_times)
-            
+
+            # Check results format
+            if not results or len(results) == 0:
+                 annotated_frame = frame # No detections, use original frame
+                 frame_detections = {name: 0 for name in self.class_names.values()} # Zero counts for this frame
+            else:
+                 annotated_frame = results[0].plot() # Get annotated frame
+
+                 # --- Calculate counts for THIS frame ---
+                 frame_detections = {name: 0 for name in self.class_names.values()}
+                 for box in results[0].boxes:
+                     cls_id = int(box.cls[0])
+                     cls_name = self.class_names.get(cls_id, f"Unknown({cls_id})")
+                     if cls_name in frame_detections:
+                         frame_detections[cls_name] += 1
+                         # --- Accumulate TOTAL counts ---
+                         if cls_name in self.detection_counts:
+                              self.detection_counts[cls_name] += 1
+
+
+            # --- Schedule GUI update in main thread ---
+            # Pass the annotated frame and the counts FOR THIS FRAME
+            self.root.after(1, self.update_video_display, annotated_frame, frame_detections, frame_count, loop_start_time)
+
+            # Small sleep to prevent overwhelming the GUI thread (optional, adjust as needed)
+            # time.sleep(0.01)
+
+
+        # --- Cleanup ---
         cap.release()
-        
-        # Add to detection history
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.detection_history.append({
-            "timestamp": timestamp,
-            "source": "video",
-            "filename": os.path.basename(path),
-            "counts": self.detection_counts.copy(),
-            "frames": frame_count,
-            "duration": time.time() - start_time
-        })
-        
-        self.root.after(0, self.on_video_complete)
-    
-    def update_video_display(self, frame, frame_times):
-        # Calculate FPS if we have enough frames
-        if len(frame_times) > 1:
-            fps = len(frame_times) / (frame_times[-1] - frame_times[0])
-            fps_text = f"FPS: {fps:.2f}"
-            cv2.putText(frame, fps_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        
-        # Convert to PIL Image
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(frame_rgb)
-        
-        # Resize while keeping aspect ratio
-        display_width = 800
-        ratio = display_width / pil_img.width
-        display_height = int(pil_img.height * ratio)
-        pil_img = pil_img.resize((display_width, display_height), Image.LANCZOS)
-        
-        # Convert to PhotoImage
-        img_tk = ImageTk.PhotoImage(pil_img)
-        
-        # Update display
-        self.video_display.configure(image=img_tk)
-        self.video_display.image = img_tk  # Keep a reference
-        
-        # Update stats text
-        self.video_stats_text.delete(1.0, tk.END)
-        self.video_stats_text.insert(tk.END, "Detection Counts:\n\n")
-        
-        # Sort by count
-        sorted_counts = {k: v for k, v in sorted(
-            self.detection_counts.items(), 
-            key=lambda item: item[1], 
-            reverse=True
-        ) if v > 0}
-        
-        for class_name, count in sorted_counts.items():
-            self.video_stats_text.insert(tk.END, f"{class_name}: {count}\n")
-    
+
+        # --- Final GUI update call ---
+        # Check if stopped manually or finished naturally
+        if not self.running and frame_count < self.total_frames: # Stopped manually
+             self.root.after(0, self.on_video_stop)
+        else: # Finished video
+            self.root.after(0, self.on_video_complete)
+
+    def update_video_display(self, annotated_frame, frame_detections, frame_number, frame_start_time):
+        """ Updates the video display and stats text in the main GUI thread """
+        if not self.processing_video and not self.running: # Check if we stopped abruptly
+             return # Avoid updating if processing is meant to be stopped
+
+        # --- FPS Calculation ---
+        processing_time = time.time() - frame_start_time
+        fps = 1.0 / processing_time if processing_time > 0 else 0
+        fps_text = f"FPS: {fps:.1f}"
+        cv2.putText(annotated_frame, fps_text, (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3, cv2.LINE_AA)
+
+        # --- Store current frame for potential saving ---
+        self.current_frame = annotated_frame # Store the annotated frame
+
+        # --- Convert and resize for display ---
+        try:
+            img_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(img_rgb)
+
+            widget_width = self.video_display.winfo_width()
+            widget_height = self.video_display.winfo_height()
+            if widget_width <= 1: widget_width = 800
+            if widget_height <= 1: widget_height = 600
+
+            img_width, img_height = pil_img.size
+            ratio = min(widget_width / img_width, widget_height / img_height)
+            new_width = int(img_width * ratio)
+            new_height = int(img_height * ratio)
+
+            if new_width < img_width or new_height < img_height: # Only downscale
+                pil_img = pil_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+            img_tk = ImageTk.PhotoImage(pil_img)
+
+            # --- Update Video Display ---
+            self.video_display.configure(image=img_tk)
+            self.video_display.image = img_tk  # Keep reference
+
+            # --- Update Stats Text (Counts for CURRENT frame) ---
+            self.video_stats_text.delete(1.0, tk.END)
+            self.video_stats_text.insert(tk.END, "--- Current Frame Detections ---\n\n")
+
+            total_frame_detections = 0
+            # Sort frame detections by count desc
+            sorted_frame_counts = {k: v for k, v in sorted(frame_detections.items(), key=lambda item: item[1], reverse=True) if v > 0}
+
+            if not sorted_frame_counts:
+                 self.video_stats_text.insert(tk.END, "(No objects detected in this frame)")
+            else:
+                for class_name, count in sorted_frame_counts.items():
+                    self.video_stats_text.insert(tk.END, f"{class_name}: {count}\n")
+                    total_frame_detections += count
+                self.video_stats_text.insert(tk.END, f"\n--- Total This Frame: {total_frame_detections} ---")
+
+
+            # --- Update Progress Bar ---
+            if self.total_frames > 0:
+                 self.video_progress["value"] = frame_number
+
+        except Exception as e:
+             print(f"Error updating video display: {e}") # Print error, but try to continue
+             # Avoid showing messagebox here as it could flood the user
+
+
     def on_video_complete(self):
+        """ Called when video processing finishes naturally """
+        self.processing_video = False
+        self.running = False # Ensure flag is off
         self.detect_video_btn.configure(state=tk.NORMAL)
         self.stop_video_btn.configure(state=tk.DISABLED)
+        self.save_video_btn.configure(state=tk.NORMAL) # Enable saving final results
+        self.video_progress["value"] = self.video_progress["maximum"] # Fill progress bar
+        self.status_var.set("Video processing complete.")
+        # Store the TOTAL accumulated counts for saving
+        self.detected_objects = self.detection_counts.copy()
+        messagebox.showinfo("Video Finished", f"Video processing finished.\nTotal objects detected (accumulated): {sum(self.detected_objects.values())}")
+
+    def on_video_stop(self):
+        """ Called when video processing is stopped manually """
         self.processing_video = False
-        self.status_var.set("Video processing complete")
-        
-        # Stop data recording if it's active
-        if self.recording_data:
-            self.stop_data_recording()
-        
-        # Update analytics
-        self.update_analytics()
-    
-    def start_camera(self):
-        try:
-            cam_id = int(self.camera_id_var.get())
-            if self.cap is None:
-                self.cap = cv2.VideoCapture(cam_id)
-                if self.cap.isOpened():
-                    self.start_cam_btn.configure(state=tk.DISABLED)
-                    self.stop_cam_btn.configure(state=tk.NORMAL)
-                    self.snapshot_btn.configure(state=tk.NORMAL)
-                    self.record_btn.configure(state=tk.NORMAL)
-                    
-                    # Reset detection counts
-                    self.detection_counts = {class_name: 0 for class_name in self.class_names.values()}
-                    self.camera_stats_text.delete(1.0, tk.END)
-                    
-                    # Reset FPS calculation
-                    self.frame_times = []
-                    self.last_frame_time = time.time()
-                    
-                    # Start data recording if selected
-                    if self.cam_record_data_var.get():
-                        self.start_data_recording()
-                    
-                    self.status_var.set(f"Camera {cam_id} started")
-                    self.update_camera()
-                else:
-                    self.cap = None
-                    messagebox.showerror("Error", f"Could not open camera {cam_id}")
-        except Exception as e:
-            messagebox.showerror("Camera Error", str(e))
-    
-    def stop_camera(self):
-        if self.cap:
-            self.cap.release()
-            self.cap = None
-            self.start_cam_btn.configure(state=tk.NORMAL)
-            self.stop_cam_btn.configure(state=tk.DISABLED)
-            self.snapshot_btn.configure(state=tk.DISABLED)
-            self.record_btn.configure(state=tk.DISABLED)
-            
-            # Stop recording if active
-            if self.is_recording and self.video_writer:
-                self.toggle_recording()
-            
-            # Stop data recording if active
-            if self.recording_data:
-                self.stop_data_recording()
-            
-            # Clear display
-            self.camera_display.configure(image='')
-            self.status_var.set("Camera stopped")
-            
-            # Add to detection history
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.detection_history.append({
-                "timestamp": timestamp,
-                "source": "camera",
-                "device": self.camera_id_var.get(),
-                "counts": self.detection_counts.copy()
-            })
-    
-    def update_camera(self):
-        if self.cap and self.cap.isOpened():
-            ret, frame = self.cap.read()
-            if ret:
-                # Calculate FPS
-                current_time = time.time()
-                self.frame_times.append(current_time)
-                
-                # Keep only last 30 frames for FPS calculation
-                if len(self.frame_times) > 30:
-                    self.frame_times.pop(0)
-                
-                if len(self.frame_times) > 1:
-                    fps = len(self.frame_times) / (self.frame_times[-1] - self.frame_times[0])
-                    self.fps_var.set(f"FPS: {fps:.2f}")
-                
-                # Get selected classes
-                selected_classes = [int(idx) for idx, var in self.class_vars.items() if var.get()]
-                
-                # Perform detection
-                results = self.model.predict(
-                    source=frame, 
-                    conf=self.confidence_threshold,
-                    imgsz=640,
-                    classes=selected_classes
-                )
-                annotated = results[0].plot()
-                
-                # Check for alerts
-                if self.alert_enabled_var.get():
-                    alert_class = self.alert_class_var.get()
-                    for box in results[0].boxes:
-                        cls_id = int(box.cls[0])
-                        cls_name = self.class_names[cls_id]
-                        if cls_name == alert_class:
-                            # Flash border or alert
-                            cv2.rectangle(annotated, (0, 0), (annotated.shape[1], annotated.shape[0]), (0, 0, 255), 10)
-                            # Show alert message
-                            if int(current_time) % 2 == 0:  # Flash every other second
-                                cv2.putText(annotated, f"ALERT: {alert_class} detected", 
-                                          (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
-                
-                # Update detection counts for the current frame
-                frame_detections = {class_name: 0 for class_name in self.class_names.values()}
-                for box in results[0].boxes:
-                    cls_id = int(box.cls[0])
-                    cls_name = self.class_names[cls_id]
-                    if cls_name in self.detection_counts:
-                        self.detection_counts[cls_name] += 1
-                        frame_detections[cls_name] += 1
-                
-                # Record data if enabled
-                if self.recording_data:
-                    timestamp = time.time() - self.data_recording_start_time
-                    self.record_detection_data(timestamp, frame_detections, "camera")
-                
-                # Save current frame for potential snapshot
-                self.current_frame = annotated
-                
-                # Record video if active
-                if self.is_recording and self.video_writer:
-                    self.video_writer.write(annotated)
-                
-                # Convert to RGB for PIL
-                annotated_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-                pil_img = Image.fromarray(annotated_rgb)
-                
-                # Resize while keeping aspect ratio
-                display_width = 800
-                ratio = display_width / pil_img.width
-                display_height = int(pil_img.height * ratio)
-                pil_img = pil_img.resize((display_width, display_height), Image.LANCZOS)
-                
-                # Convert to PhotoImage
-                img_tk = ImageTk.PhotoImage(pil_img)
-                
-                # Update display
-                self.camera_display.configure(image=img_tk)
-                self.camera_display.image = img_tk  # Keep a reference
-                
-                # Update stats
-                self.camera_stats_text.delete(1.0, tk.END)
-                self.camera_stats_text.insert(tk.END, "Current Detection Counts:\n\n")
-                
-                # Sort by count and show only non-zero counts
-                sorted_counts = {k: v for k, v in sorted(
-                    frame_detections.items(), 
-                    key=lambda item: item[1], 
-                    reverse=True
-                ) if v > 0}
-                
-                for class_name, count in sorted_counts.items():
-                    self.camera_stats_text.insert(tk.END, f"{class_name}: {count}\n")
-                
-                self.camera_stats_text.insert(tk.END, "\nTotal Detections:\n")
-                
-                # Show total counts (since camera start)
-                total_sorted = {k: v for k, v in sorted(
-                    self.detection_counts.items(), 
-                    key=lambda item: item[1], 
-                    reverse=True
-                ) if v > 0}
-                
-                for class_name, count in total_sorted.items():
-                    self.camera_stats_text.insert(tk.END, f"{class_name}: {count}\n")
-                
-                # Schedule next update
-                self.root.after(30, self.update_camera)  # ~33 FPS max
-            else:
-                self.stop_camera()
-        else:
-            self.stop_camera()
-    
-    def take_snapshot(self):
-        # Save the current frame as an image
-        if self.current_frame is not None:
-            # Ensure output directory exists
-            output_dir = self.output_dir_var.get()
-            os.makedirs(output_dir, exist_ok=True)
-            
-            # Generate filename with timestamp
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"{output_dir}/snapshot_{timestamp}.jpg"
-            
-            # Save image
-            cv2.imwrite(filename, self.current_frame)
-            self.status_var.set(f"Snapshot saved: {filename}")
-            
-            # Add to detection history
-            self.detection_history.append({
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "source": "snapshot",
-                "filename": os.path.basename(filename),
-                "counts": self.detection_counts.copy()
-            })
-    
-    def toggle_recording(self):
-        if not self.is_recording:
-            # Start recording
-            output_dir = self.output_dir_var.get()
-            os.makedirs(output_dir, exist_ok=True)
-            
-            # Generate filename with timestamp
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"{output_dir}/recording_{timestamp}.mp4"
-            
-            # Get video properties
-            width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps = 30.0  # Target fps
-            
-            # Create VideoWriter
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            self.video_writer = cv2.VideoWriter(filename, fourcc, fps, (width, height))
-            
-            self.is_recording = True
-            self.record_btn.configure(text="Stop Recording")
-            self.status_var.set(f"Recording started: {filename}")
-        else:
-            # Stop recording
-            if self.video_writer:
-                self.video_writer.release()
-                self.video_writer = None
-            
-            self.is_recording = False
-            self.record_btn.configure(text="Start Recording")
-            self.status_var.set("Recording stopped")
-    
-    def toggle_data_recording(self):
-        if not self.recording_data and (self.record_data_var.get() or self.cam_record_data_var.get()):
-            self.start_data_recording()
-        elif self.recording_data and not (self.record_data_var.get() or self.cam_record_data_var.get()):
-            self.stop_data_recording()
-    
-    def start_data_recording(self):
-        # Create directory for data if it doesn't exist
+        self.running = False # Ensure flag is off
+        self.detect_video_btn.configure(state=tk.NORMAL)
+        self.stop_video_btn.configure(state=tk.DISABLED)
+        self.save_video_btn.configure(state=tk.NORMAL) # Also allow saving the last frame when stopped
+        self.status_var.set("Video processing stopped by user.")
+         # Store the TOTAL accumulated counts up to the point of stopping
+        self.detected_objects = self.detection_counts.copy()
+        # Maybe show info about partial results
+        messagebox.showinfo("Video Stopped", f"Video processing stopped.\nObjects detected up to this point (accumulated): {sum(self.detected_objects.values())}")
+
+
+    def save_results(self, source_type):
+        # Save the currently stored frame (last processed) and detection data
+        if self.current_frame is None:
+            messagebox.showinfo("Save Result", "No detection result (image or frame) available to save.")
+            return
+
+        # Get the output directory and create if it doesn't exist
         output_dir = self.output_dir_var.get()
-        os.makedirs(f"{output_dir}/data", exist_ok=True)
-        
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except OSError as e:
+             messagebox.showerror("Save Error", f"Could not create output directory:\n{output_dir}\nError: {e}")
+             return
+
         # Generate filename with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.data_file = f"{output_dir}/data/detection_data_{timestamp}.csv"
-        
-        # Create CSV file with headers
-        with open(self.data_file, 'w', newline='') as file:
-            writer = csv.writer(file)
-            headers = ['timestamp', 'source'] + list(self.class_names.values()) + ['total']
-            writer.writerow(headers)
-        
-        self.recording_data = True
-        self.data_recording_start_time = time.time()
-        self.status_var.set(f"Data recording started: {self.data_file}")
-    
-    def stop_data_recording(self):
-        self.recording_data = False
-        self.status_var.set("Data recording stopped")
-        
-        # Uncheck recording checkboxes
-        self.record_data_var.set(False)
-        self.cam_record_data_var.set(False)
-    
-    def record_detection_data(self, timestamp, detections, source):
-        if not self.recording_data:
-            return
-            
+        base_filename = f"{source_type}_result_{timestamp}"
+        image_filename = os.path.join(output_dir, f"{base_filename}.jpg")
+        data_filename = os.path.join(output_dir, f"{base_filename}_data.json")
+
         try:
-            with open(self.data_file, 'a', newline='') as file:
-                writer = csv.writer(file)
-                
-                # Prepare row data
-                row_data = [timestamp, source]
-                
-                # Add counts for each class
-                total_count = 0
-                for class_name in self.class_names.values():
-                    count = detections.get(class_name, 0)
-                    row_data.append(count)
-                    total_count += count
-                
-                # Add total count
-                row_data.append(total_count)
-                
-                # Write to CSV
-                writer.writerow(row_data)
-        except Exception as e:
-            print(f"Error recording data: {str(e)}")
-            self.stop_data_recording()
-    
-    def update_analytics(self):
-        # Update object count chart
-        self.analytics_ax.clear()
-        
-        # Combine all detection counts from history
-        if not self.detection_history:
-            self.analytics_ax.text(0.5, 0.5, 'No detection data available', 
-                                ha='center', va='center', transform=self.analytics_ax.transAxes)
-        else:
-            # Aggregate counts from all detection events
-            combined_counts = {}
-            for entry in self.detection_history:
-                for cls, count in entry['counts'].items():
-                    if cls not in combined_counts:
-                        combined_counts[cls] = 0
-                    combined_counts[cls] += count
-            
-            # Filter out zero counts and sort
-            filtered_counts = {k: v for k, v in combined_counts.items() if v > 0}
-            sorted_counts = dict(sorted(filtered_counts.items(), key=lambda item: item[1], reverse=True))
-            
-            if sorted_counts:
-                # Create bar chart
-                classes = list(sorted_counts.keys())
-                counts = list(sorted_counts.values())
-                
-                bars = self.analytics_ax.bar(classes, counts, color='skyblue')
-                self.analytics_ax.set_ylabel('Count')
-                self.analytics_ax.set_title('Detection Count by Class')
-                
-                # Add count labels on top of bars
-                for bar in bars:
-                    height = bar.get_height()
-                    self.analytics_ax.text(bar.get_x() + bar.get_width()/2., height + 0.1,
-                                        f'{int(height)}', ha='center', va='bottom')
-                
-                # Rotate x-axis labels for better readability
-                self.analytics_ax.set_xticklabels(classes, rotation=45, ha='right')
-                
-                # Adjust layout
-                self.analytics_figure.tight_layout()
-            else:
-                self.analytics_ax.text(0.5, 0.5, 'No non-zero detection counts available', 
-                                    ha='center', va='center', transform=self.analytics_ax.transAxes)
-        
-        self.analytics_canvas.draw()
-        
-        # Update timeline chart
-        self.timeline_ax.clear()
-        
-        if len(self.detection_history) > 1:
-            # Create timeline data
-            timestamps = []
-            total_counts = []
-            sources = []
-            
-            for entry in self.detection_history:
-                # Convert timestamp string to datetime
-                dt = datetime.strptime(entry['timestamp'], "%Y-%m-%d %H:%M:%S")
-                timestamps.append(dt)
-                
-                # Calculate total objects
-                total = sum(entry['counts'].values())
-                total_counts.append(total)
-                
-                # Record source
-                sources.append(entry['source'])
-            
-            # Create scatter plot with different markers for different sources
-            source_markers = {'image': 'o', 'video': 's', 'camera': '^', 'snapshot': 'x'}
-            source_colors = {'image': 'blue', 'video': 'green', 'camera': 'red', 'snapshot': 'purple'}
-            
-            for source in set(sources):
-                indices = [i for i, s in enumerate(sources) if s == source]
-                self.timeline_ax.scatter(
-                    [timestamps[i] for i in indices],
-                    [total_counts[i] for i in indices],
-                    marker=source_markers.get(source, 'o'),
-                    color=source_colors.get(source, 'blue'),
-                    label=source,
-                    alpha=0.7
-                )
-            
-            # Add line connecting points chronologically
-            self.timeline_ax.plot(timestamps, total_counts, 'k-', alpha=0.3)
-            
-            self.timeline_ax.set_ylabel('Total Objects Detected')
-            self.timeline_ax.set_title('Detection Timeline')
-            
-            # Format x-axis dates
-            self.timeline_ax.xaxis.set_major_formatter(plt.matplotlib.dates.DateFormatter('%H:%M:%S'))
-            
-            # Rotate x-axis labels
-            plt.setp(self.timeline_ax.get_xticklabels(), rotation=45, ha='right')
-            
-            # Add legend
-            self.timeline_ax.legend()
-            
-            # Adjust layout
-            self.timeline_figure.tight_layout()
-        else:
-            self.timeline_ax.text(0.5, 0.5, 'Not enough data for timeline', 
-                                ha='center', va='center', transform=self.timeline_ax.transAxes)
-        
-        self.timeline_canvas.draw()
-    
-    def export_analytics(self):
-        # Export analytics data to CSV
-        if not self.detection_history:
-            messagebox.showinfo("Export Analytics", "No detection data available to export")
-            return
-        
-        try:
-            # Ensure output directory exists
-            output_dir = self.output_dir_var.get()
-            os.makedirs(f"{output_dir}/reports", exist_ok=True)
-            
-            # Generate filename with timestamp
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"{output_dir}/reports/analytics_report_{timestamp}.csv"
-            
-            # Create CSV file with detection history
-            with open(filename, 'w', newline='') as file:
-                writer = csv.writer(file)
-                
-                # Write headers
-                headers = ['timestamp', 'source', 'filename']
-                
-                # Get all possible classes from history
-                all_classes = set()
-                for entry in self.detection_history:
-                    all_classes.update(entry['counts'].keys())
-                
-                headers.extend(sorted(all_classes))
-                headers.append('total')
-                writer.writerow(headers)
-                
-                # Write data rows
-                for entry in self.detection_history:
-                    row = [
-                        entry['timestamp'],
-                        entry['source'],
-                        entry.get('filename', entry.get('device', 'N/A'))
-                    ]
-                    
-                    # Add counts for each class
-                    for cls in sorted(all_classes):
-                        row.append(entry['counts'].get(cls, 0))
-                    
-                    # Add total
-                    row.append(sum(entry['counts'].values()))
-                    
-                    writer.writerow(row)
-            
-            # Generate summary report
-            summary_filename = f"{output_dir}/reports/summary_report_{timestamp}.txt"
-            with open(summary_filename, 'w') as file:
-                file.write("YOLO Detection Summary Report\n")
-                file.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-                
-                file.write("Detection Sessions Summary:\n")
-                file.write(f"Total sessions: {len(self.detection_history)}\n")
-                
-                # Count by source
-                source_counts = {}
-                for entry in self.detection_history:
-                    source = entry['source']
-                    if source not in source_counts:
-                        source_counts[source] = 0
-                    source_counts[source] += 1
-                
-                file.write("\nSessions by Source:\n")
-                for source, count in source_counts.items():
-                    file.write(f"- {source}: {count}\n")
-                
-                # Aggregate object counts
-                combined_counts = {}
-                for entry in self.detection_history:
-                    for cls, count in entry['counts'].items():
-                        if cls not in combined_counts:
-                            combined_counts[cls] = 0
-                        combined_counts[cls] += count
-                
-                file.write("\nTotal Objects Detected:\n")
-                total_objects = sum(combined_counts.values())
-                file.write(f"Total: {total_objects}\n\n")
-                
-                file.write("Objects by Class:\n")
-                sorted_counts = dict(sorted(combined_counts.items(), key=lambda item: item[1], reverse=True))
-                for cls, count in sorted_counts.items():
-                    if count > 0:
-                        percentage = (count / total_objects) * 100 if total_objects > 0 else 0
-                        file.write(f"- {cls}: {count} ({percentage:.1f}%)\n")
-            
-            self.status_var.set(f"Analytics exported to {filename} and {summary_filename}")
-            messagebox.showinfo("Export Complete", f"Analytics data exported to:\n{filename}\n\nSummary report exported to:\n{summary_filename}")
-        
-        except Exception as e:
-            messagebox.showerror("Export Error", f"Failed to export analytics: {str(e)}")
-    
-    def save_results(self, source_type):
-        # Save current detection results
-        if self.current_frame is None:
-            messagebox.showinfo("Save Results", "No detection results available to save")
-            return
-        
-        try:
-            # Ensure output directory exists
-            output_dir = self.output_dir_var.get()
-            os.makedirs(output_dir, exist_ok=True)
-            
-            # Generate filename with timestamp
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            image_filename = f"{output_dir}/{source_type}_result_{timestamp}.jpg"
-            
-            # Save image with detections
-            cv2.imwrite(image_filename, self.current_frame)
-            
-            # Save detection data as JSON
-            data_filename = f"{output_dir}/{source_type}_data_{timestamp}.json"
+            # --- Save image (the self.current_frame numpy array) ---
+            success = cv2.imwrite(image_filename, self.current_frame)
+            if not success:
+                raise IOError(f"Failed to write image file to {image_filename}")
+
+            # --- Prepare detection data ---
+            # For 'image', self.detected_objects was set in detect_image
+            # For 'video', self.detected_objects was set in on_video_complete/on_video_stop (total counts)
             detection_data = {
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "source": source_type,
-                "counts": self.detected_objects,
-                "total": sum(self.detected_objects.values()),
-                "confidence_threshold": self.confidence_threshold
+                "timestamp": datetime.now().isoformat(),
+                "source_type": source_type,
+                "input_file": self.image_path_var.get() if source_type == "image" else self.video_path_var.get(),
+                "settings": {
+                     "confidence_threshold": self.confidence_threshold,
+                     "detected_classes": [self.class_names[idx] for idx, var in self.class_vars.items() if var.get()],
+                 },
+                "detection_counts": self.detected_objects, # Contains image counts or *total* video counts
+                "total_objects": sum(self.detected_objects.values())
             }
-            
+            if source_type == "video":
+                detection_data["info"] = "Counts represent total accumulated objects during processing."
+
+
+            # --- Save detection data as JSON ---
             with open(data_filename, 'w') as f:
                 json.dump(detection_data, f, indent=4)
-            
-            self.status_var.set(f"Results saved to {image_filename} and {data_filename}")
-            messagebox.showinfo("Save Complete", f"Detection results saved to:\n{image_filename}\n\nData saved to:\n{data_filename}")
-        
+
+            self.status_var.set(f"Results saved to {output_dir}")
+            messagebox.showinfo("Save Complete", f"Detection result saved:\nImage: {image_filename}\nData: {data_filename}")
+
         except Exception as e:
-            messagebox.showerror("Save Error", f"Failed to save results: {str(e)}")
-    
+            messagebox.showerror("Save Error", f"Failed to save results.\nError: {e}")
+            self.status_var.set(f"Error saving results: {e}")
+
     def on_closing(self):
-        self.running = False
-        if self.cap:
-            self.cap.release()
-        
-        # Stop any recordings
-        if self.is_recording and self.video_writer:
-            self.video_writer.release()
-        
-        # Stop data recording
-        if self.recording_data:
-            self.stop_data_recording()
-        
-        self.root.destroy()
+        # Gracefully handle closing the application
+        if self.processing_video:
+            if messagebox.askyesno("Confirm Exit", "Video processing is ongoing. Stop and exit?"):
+                self.running = False # Signal thread to stop
+                if self.video_thread and self.video_thread.is_alive():
+                    try:
+                        self.video_thread.join(timeout=1.0) # Wait briefly for thread
+                    except Exception as e:
+                         print(f"Error joining video thread: {e}")
+                self.root.destroy()
+            else:
+                return # Don't close if user cancels
+        else:
+            self.running = False # Ensure flag is false even if no video thread
+            # Add any other cleanup needed here
+            self.root.destroy()
+
 
 if __name__ == "__main__":
     root = tk.Tk()
+    # Set the icon (optional, replace 'icon.ico' or 'icon.png')
+    # try:
+    #     # For Windows .ico
+    #     # root.iconbitmap('icon.ico')
+    #     # For cross-platform .png (requires Pillow)
+    #     # icon = ImageTk.PhotoImage(file='icon.png')
+    #     # root.iconphoto(True, icon)
+    #     pass # Add your icon path here
+    # except Exception as e:
+    #     print(f"Could not load icon: {e}")
+
     app = YOLODetectionApp(root)
-    root.mainloop() 
+    root.mainloop()
