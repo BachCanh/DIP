@@ -88,7 +88,7 @@ class YOLODetectionApp:
 
         notebook.add(image_tab, text=" Image Detection ")
         notebook.add(video_tab, text=" Video Detection ")
-        notebook.add(settings_tab, text=" Settings ")
+      
 
     def update_status(self, message, clear_after=0):
         self.status_var.set(message)
