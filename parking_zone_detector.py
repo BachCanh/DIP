@@ -150,8 +150,6 @@ class ParkingZoneDetector:
                     'current_time': timestamp
                 })
 
-                # Play warning sound
-                self.play_warning_sound()
 
                 cv2.putText(frame, "ILLEGAL PARKING", (x1, y1 - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
