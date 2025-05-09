@@ -28,93 +28,94 @@ class ZoneEditorApp:
         self.editing_mode = True
         self.canvas_width = 800
         self.canvas_height = 600
+        self._center_window(1100, 700)
         
         # Setup UI
         self._setup_ui()
         self._refresh_zone_files()
+
+    def _center_window(self, width, height):
+        """Center the window on the screen."""
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        x = (screen_width // 2) - (width // 2)
+        y = (screen_height // 2) - (height // 2)
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
+
         
     def _setup_ui(self):
-        # Main frame
-        main_frame = ttk.Frame(self.root, padding="10")
+        style = ttk.Style()
+        style.configure("TFrame", background=config.BG_COLOR)
+        style.configure("TLabel", background=config.BG_COLOR)
+        style.configure("TButton", padding=6)
+        style.configure("TLabelframe.Label", font=("Helvetica", 10, "bold"))
+        style.configure("TLabelframe", padding=10)
+
+        main_frame = ttk.Frame(self.root, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Left panel (image and controls)
+
+        # Left panel
         left_panel = ttk.Frame(main_frame)
         left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
-        # Image canvas
-        self.canvas_frame = ttk.LabelFrame(left_panel, text="Zone Editor", padding="5")
-        self.canvas_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
+
+        # Canvas area
+        self.canvas_frame = ttk.LabelFrame(left_panel, text="Zone Editor")
+        self.canvas_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
         self.canvas = tk.Canvas(self.canvas_frame, width=self.canvas_width, height=self.canvas_height, 
-                               bg="black", cursor="cross")
-        self.canvas.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+                                bg="black", cursor="cross", highlightthickness=1, relief="ridge")
+        self.canvas.pack(padx=10, pady=10)
         self.canvas.bind("<Button-1>", self._on_canvas_click)
-        
-        # Bottom controls
+
+        # Controls below image
         controls_frame = ttk.Frame(left_panel)
-        controls_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        # Zone type selection
+        controls_frame.pack(fill=tk.X, padx=10, pady=5)
+
         type_frame = ttk.LabelFrame(controls_frame, text="Zone Type")
         type_frame.pack(side=tk.LEFT, padx=5, pady=5)
-        
-        ttk.Radiobutton(type_frame, text="Legal Zone", variable=self.current_zone_type, 
-                       value="legal").pack(side=tk.LEFT, padx=5)
-        ttk.Radiobutton(type_frame, text="Illegal Zone", variable=self.current_zone_type, 
-                       value="illegal").pack(side=tk.LEFT, padx=5)
-        
-        # Buttons
+        ttk.Radiobutton(type_frame, text="Legal", variable=self.current_zone_type, value="legal").pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(type_frame, text="Illegal", variable=self.current_zone_type, value="illegal").pack(side=tk.LEFT, padx=5)
+
         buttons_frame = ttk.Frame(controls_frame)
-        buttons_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=5)
-        
+        buttons_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
         ttk.Button(buttons_frame, text="Load Image", command=self._load_image).pack(side=tk.LEFT, padx=5)
         ttk.Button(buttons_frame, text="Complete Zone", command=self._complete_zone).pack(side=tk.LEFT, padx=5)
         ttk.Button(buttons_frame, text="Clear Current", command=self._clear_current_zone).pack(side=tk.LEFT, padx=5)
         ttk.Button(buttons_frame, text="Clear All Zones", command=self._clear_all_zones).pack(side=tk.LEFT, padx=5)
-        
-        # Right panel (zone management)
-        right_panel = ttk.LabelFrame(main_frame, text="Zone Management", padding="10", width=250)
-        right_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=5, pady=5)
-        
-        # File management
+
+        # Right panel
+        right_panel = ttk.LabelFrame(main_frame, text="Zone Management")
+        right_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=10, pady=10)
+
         file_frame = ttk.Frame(right_panel)
         file_frame.pack(fill=tk.X, padx=5, pady=5)
-        
         ttk.Label(file_frame, text="Zone Filename:").pack(anchor=tk.W, pady=(0, 5))
         self.filename_entry = ttk.Entry(file_frame, width=25)
         self.filename_entry.pack(fill=tk.X, pady=(0, 5))
         self.filename_entry.insert(0, "parking_zones.json")
-        
+
         button_frame = ttk.Frame(file_frame)
         button_frame.pack(fill=tk.X, pady=5)
         ttk.Button(button_frame, text="Save Zones", command=self._save_zones).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(button_frame, text="Load Zones", command=self._load_zones_from_file).pack(side=tk.LEFT)
-        
-        # Zone files list
+
         files_frame = ttk.LabelFrame(right_panel, text="Saved Zone Files")
         files_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=10)
-        
         self.files_listbox = tk.Listbox(files_frame, width=25, height=10)
         self.files_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
         scrollbar = ttk.Scrollbar(files_frame, orient=tk.VERTICAL, command=self.files_listbox.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.files_listbox.config(yscrollcommand=scrollbar.set)
         self.files_listbox.bind('<<ListboxSelect>>', self._on_file_select)
-        
-        # Zone statistics
+
         stats_frame = ttk.LabelFrame(right_panel, text="Zone Statistics")
         stats_frame.pack(fill=tk.X, padx=5, pady=5)
-        
         self.stats_text = tk.Text(stats_frame, width=25, height=8, wrap=tk.WORD)
         self.stats_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self._update_stats()
-        
-        # Help text
+
         help_frame = ttk.LabelFrame(right_panel, text="Instructions")
         help_frame.pack(fill=tk.X, padx=5, pady=5)
-        
         help_text = (
             "1. Load an image of the parking area\n"
             "2. Select zone type (legal/illegal)\n"
@@ -125,6 +126,7 @@ class ZoneEditorApp:
             "Red = Illegal Parking Areas"
         )
         ttk.Label(help_frame, text=help_text, justify=tk.LEFT, wraplength=230).pack(padx=5, pady=5)
+
     
     def _load_image(self):
         """Load an image for zone definition"""

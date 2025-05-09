@@ -16,7 +16,7 @@ class ParkingZoneDetector:
             'illegal': (0, 0, 255),   # Red for illegal zones
             'warning': (0, 165, 255)  # Orange for warnings
         }
-        self.config_dir = "./parking_zones"
+        self.config_dir = "./parking_zones/"
         os.makedirs(self.config_dir, exist_ok=True)
     
     def add_zone(self, points, zone_type='legal'):
@@ -41,8 +41,9 @@ class ParkingZoneDetector:
             "legal_zones": [zone.tolist() for zone in self.legal_zones],
             "illegal_zones": [zone.tolist() for zone in self.illegal_zones]
         }
-        
+       
         filepath = os.path.join(self.config_dir, filename)
+        print(filepath)
         with open(filepath, 'w') as f:
             json.dump(data, f, indent=4)
         return filepath

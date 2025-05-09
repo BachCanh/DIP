@@ -45,12 +45,27 @@ class YOLODetectionApp:
         create_banner(self.root)
         self._create_main_interface()
         create_status_bar(self.root, self.status_var)
+        self.center_window(root)
 
         # Apply loaded/default settings to UI elements
         self._apply_settings_to_ui()
         self.update_status(self.detector.gpu_info, clear_after=5000) # Show GPU info briefly
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+    def center_window(self, root, width=None, height=None):
+        root.update_idletasks()  # Make sure layout is updated
+
+        if width is None or height is None:
+            width = root.winfo_width()
+            height = root.winfo_height()
+
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+
+        x = (screen_width // 2) - (width // 2)
+        y = (screen_height // 2) - (height // 2)
+
+        root.geometry(f"{width}x{height}+{x}+{y}")
 
     def _setup_window(self):
         self.root.title(config.PROJECT_TITLE)

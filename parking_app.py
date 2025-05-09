@@ -28,6 +28,7 @@ class ParkingDetectionApp(YOLODetectionApp):
         self.snapshot_interval = 30  # Seconds between snapshots of violations
         self.last_snapshot_time = {}  # Track last snapshot time per violation
         self.detector = YOLODetector()
+        self.is_processing_paused_for_editor = False # Add this flag
         # Now initialize base detection app
         super().__init__(root)
         
@@ -80,9 +81,10 @@ class ParkingDetectionApp(YOLODetectionApp):
         
     def _setup_parking_tab(self, parent):
         """Setup the parking detection tab UI"""
+        # In _setup_parking_tab method
         tab = ttk.Frame(parent, padding="5 5 5 5", style="Main.TFrame")
-        tab.columnconfigure(0, weight=1)
-        tab.rowconfigure(2, weight=1)
+        tab.columnconfigure(0, weight=1) 
+        tab.rowconfigure(3, weight=1)   
         
         # File frame
         ff = ttk.LabelFrame(tab, text="Parking Detection Source", padding="10 10")
@@ -210,28 +212,65 @@ class ParkingDetectionApp(YOLODetectionApp):
             return False
     
     def _open_zone_editor_with_image(self, image_path):
-        """Open the zone editor with a specific image preloaded"""
+        """Open the zone editor with a specific image preloaded, and disable the main window"""
+        # Create a new top-level window
         editor_window = tk.Toplevel(self.root)
-        editor_app = ZoneEditorApp(editor_window)
+        editor_window.title("Parking Zone Editor")
         
+        # Make sure it has proper dimensions
+        editor_window.geometry("1024x768")
+        
+        # Initialize the zone editor
+        editor_app = ZoneEditorApp(editor_window)
+
+        # Keep the main window state preserved by disabling interaction but NOT changing attributes
+        # that would cause layout recalculation
+        self.root.attributes('-disabled', True)
+        
+        # Make sure this window stays on top of the main window
+        editor_window.transient(self.root)
+        editor_window.grab_set()
+        
+        # Store the original size of the main window
+        original_geometry = self.root.geometry()
+
+        def on_close():
+            # Re-enable the main window
+            self.root.attributes('-disabled', False)
+            
+            # Restore the original geometry if needed
+            self.root.geometry(original_geometry)
+            
+            # Release the grab and destroy the editor window
+            editor_window.grab_release()
+            editor_window.destroy()
+            
+            # Force an update of the main window layout
+            self.root.update_idletasks()
+
+        editor_window.protocol("WM_DELETE_WINDOW", on_close)
+
         # Schedule loading the image after the editor window is fully created
         editor_window.after(100, lambda: self._load_image_in_editor(editor_app, image_path))
     
     def _load_image_in_editor(self, editor_app, image_path):
         """Load the specified image into the zone editor"""
-        # Set the image path and load it
         editor_app.image_path = image_path
         editor_app.current_image = cv2.imread(image_path)
         if editor_app.current_image is not None:
             editor_app._update_canvas()
             
-            # Show an instruction message to the user
-            messagebox.showinfo("Zone Definition", 
+            # Display messagebox with the editor window as parent
+            # This ensures proper window stacking order
+            messagebox.showinfo(
+                "Zone Definition",
                 "Define parking zones by clicking points on the image.\n\n"
                 "1. Select 'Legal Zone' or 'Illegal Zone'\n"
                 "2. Click points to create a polygon\n"
                 "3. Click 'Complete Zone' when finished\n"
-                "4. Save the zones when done")
+                "4. Save the zones when done",
+                parent=editor_app.root  # Set the parent explicitly
+            )
     
     def _browse_zone_file(self):
         """Browse for a parking zone definition file"""
@@ -243,28 +282,79 @@ class ParkingDetectionApp(YOLODetectionApp):
             self.current_zone_file.set(os.path.basename(file_path))
             self.update_status(f"Selected zone file: {os.path.basename(file_path)}")
     
+    # In parking_app.py (ParkingDetectionApp class)
+
     def _load_parking_zones(self):
-        """Load parking zones from selected file"""
-        filename = self.current_zone_file.get()
-        if not filename:
-            messagebox.showwarning("Warning", "Please enter a zone filename.")
+        """Load parking zones from selected file."""
+        ui_filename_input = self.current_zone_file.get() # Filename from the UI entry
+        if not ui_filename_input:
+            messagebox.showwarning("Load Zones", "Please enter or select a zone filename.")
+            self.update_status("Zone loading cancelled: No filename provided.", warning=True)
             return
-            
-        # Add .json extension if not present
-        if not filename.endswith('.json'):
-            filename += '.json'
-            
-        if self.zone_detector.load_zones(filename):
-            self.update_status(f"Loaded parking zones from {filename}")
-            messagebox.showinfo("Success", f"Zones loaded from {filename}")
+
+        # Ensure it has a .json extension
+        if not ui_filename_input.endswith('.json'):
+            ui_filename_input += '.json'
+
+       
+        filename_to_load = os.path.basename(ui_filename_input)
+        print(f"Filename being passed to zone_detector.load_zones(): '{filename_to_load}'")
+
+
+        if self.zone_detector.load_zones(filename_to_load): # Pass the (potentially basename) filename
+            self.update_status(f"Successfully loaded zones from '{filename_to_load}' (in config dir).")
+            messagebox.showinfo("Load Zones Success", f"Zones loaded successfully from '{filename_to_load}'.")
         else:
-            self.update_status(f"Failed to load zones from {filename}")
-            messagebox.showerror("Error", f"Could not load zones from {filename}")
+            # The actual full path ParkingZoneDetector tried to load will be useful here.
+            # We can't directly get it from the return False, so we construct it for the message.
+            expected_full_path = os.path.join(self.zone_detector.config_dir, filename_to_load)
+            error_msg = f"Could not load zones from '{filename_to_load}'.\n" \
+                        f"Expected file at: {expected_full_path}\n\n" \
+                        f"Please check:\n" \
+                        f"1. The file exists in the directory: '{self.zone_detector.config_dir}'.\n" \
+                        f"2. The file is a valid JSON format.\n" \
+                        f"3. The filename in the UI is correct."
+            self.update_status(f"Failed to load zones from '{filename_to_load}'. See error dialog.", error=True)
+            messagebox.showerror("Load Zones Error", error_msg)
+
     
     def _open_zone_editor(self):
-        """Open the zone editor in a new window"""
-        editor_window = tk.Toplevel(self.root)
-        editor_app = ZoneEditorApp(editor_window)
+        """Open the zone editor with the current video frame"""
+        video_path = self.parking_video_path_var.get()
+        if not video_path:
+            messagebox.showwarning("Warning", "Please select a video file first.")
+            return
+
+        # Extract the current frame and open the editor
+        self._extract_current_frame_and_open_zone_editor(video_path)
+    def _extract_current_frame_and_open_zone_editor(self, video_path):
+        """Extract the current frame from the video and open the zone editor dialog"""
+        try:
+            frames_dir = os.path.join("temp", "frames")
+            os.makedirs(frames_dir, exist_ok=True)
+
+            # Open video and read the current frame (or first frame for simplicity)
+            video = cv2.VideoCapture(video_path)
+            if not video.isOpened():
+                self.update_status("Error: Could not open video file")
+                return
+
+            # If you want the current frame, you may want to track the frame number elsewhere.
+            # For now, just grab the first frame:
+            ret, frame = video.read()
+            if not ret:
+                self.update_status("Error: Could not read frame from video")
+                return
+
+            frame_path = os.path.join(frames_dir, "current_frame.jpg")
+            cv2.imwrite(frame_path, frame)
+            video.release()
+
+            # Now open the zone editor with this frame
+            self._open_zone_editor_with_image(frame_path)
+
+        except Exception as e:
+            self.update_status(f"Error extracting frame: {str(e)}")
         
     def _start_parking_detection(self):
         """Start parking violation detection"""
