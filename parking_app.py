@@ -12,10 +12,12 @@ import threading
 from app import YOLODetectionApp
 import config
 from yolo_detector import YOLODetector
+from ui_components import setup_parking_tab
 from parking_zone_detector import ParkingZoneDetector
 from ui_components import setup_styles, create_banner, display_image_on_label, create_status_bar
 from video_processor import VideoProcessor
 from zone_editor import ZoneEditorApp
+from PIL import Image, ImageTk
 
 
 class ParkingDetectionApp(YOLODetectionApp):
@@ -29,6 +31,9 @@ class ParkingDetectionApp(YOLODetectionApp):
         self.last_snapshot_time = {}  # Track last snapshot time per violation
         self.detector = YOLODetector()
         self.is_processing_paused_for_editor = False # Add this flag
+        
+        self.parking_video_path_var = tk.StringVar()
+        self.video_size_var = tk.DoubleVar(value=1.0) 
         # Now initialize base detection app
         super().__init__(root)
         
@@ -47,8 +52,7 @@ class ParkingDetectionApp(YOLODetectionApp):
             self.update_status(f"Loaded default parking zones")
     
     def _reorder_tabs(self):
-        """Reorder tabs to put Parking tab before Settings"""
-        # Get reference to the notebook
+        """Find and store reference to the notebook widget."""
         self.notebook = None
         for child in self.root.winfo_children():
             if isinstance(child, ttk.Frame):
@@ -56,152 +60,18 @@ class ParkingDetectionApp(YOLODetectionApp):
                     if isinstance(grandchild, ttk.Notebook):
                         self.notebook = grandchild
                         break
-        
+
         if not self.notebook:
             messagebox.showerror("Error", "Could not find notebook widget")
             return
-    
+
     def _add_parking_tab(self):
-        """Add a new tab for parking violation detection"""
         if not hasattr(self, 'notebook') or not self.notebook:
             messagebox.showerror("Error", "Could not find notebook widget")
             return
-            
-        # Create the parking tab
-        parking_tab = self._setup_parking_tab(self.notebook)
+        parking_tab = setup_parking_tab(self.notebook, self)
+        self.notebook.add(parking_tab, text=" Parking Detection ")  # Always add at the end
         
-        # Insert the parking tab before the last tab (assuming Settings is last)
-        tab_count = self.notebook.index('end')
-        if tab_count > 0:
-            # Add the tab at the position before the last tab
-            self.notebook.insert(tab_count - 1, parking_tab, text=" Parking Detection ")
-        else:
-            # If no tabs, just add it
-            self.notebook.add(parking_tab, text=" Parking Detection ")
-        
-    def _setup_parking_tab(self, parent):
-        """Setup the parking detection tab UI"""
-        # In _setup_parking_tab method
-        tab = ttk.Frame(parent, padding="5 5 5 5", style="Main.TFrame")
-        tab.columnconfigure(0, weight=1) 
-        tab.rowconfigure(3, weight=1)   
-        
-        # File frame
-        ff = ttk.LabelFrame(tab, text="Parking Detection Source", padding="10 10")
-        ff.grid(row=0, column=0, sticky="ew", padx=5, pady=(5, 10))
-        ff.columnconfigure(1, weight=1)
-        
-        # Use the same source controls as video tab
-        ttk.Label(ff, text="Select Video:").grid(row=0, column=0, padx=(0, 5), pady=5, sticky="w")
-        self.parking_video_path_var = StringVar()
-        ttk.Entry(ff, textvariable=self.parking_video_path_var, width=50).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        ttk.Button(ff, text="Browse...", command=self._browse_parking_video).grid(row=0, column=2, padx=5, pady=5)
-        
-        # Zone configuration frame
-        zf = ttk.LabelFrame(tab, text="Parking Zone Configuration", padding="10 10")
-        zf.grid(row=1, column=0, sticky="ew", padx=5, pady=(0, 10))
-        zf.columnconfigure(1, weight=1)
-        
-        ttk.Label(zf, text="Zone File:").grid(row=0, column=0, padx=(0, 5), pady=5, sticky="w")
-        ttk.Entry(zf, textvariable=self.current_zone_file, width=40).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        ttk.Button(zf, text="Browse...", command=self._browse_zone_file).grid(row=0, column=2, padx=5, pady=5)
-        ttk.Button(zf, text="Load Zones", command=self._load_parking_zones).grid(row=0, column=3, padx=5, pady=5)
-        ttk.Button(zf, text="Edit Zones", command=self._open_zone_editor).grid(row=0, column=4, padx=5, pady=5)
-        
-        # Control frame
-        cf = ttk.Frame(tab, padding="5 0", style="Main.TFrame")
-        cf.grid(row=2, column=0, sticky="ew", padx=5, pady=(0, 10))
-        cf.columnconfigure(3, weight=1)
-        
-        self.parking_detect_btn = ttk.Button(cf, text="Start Detection", command=self._start_parking_detection)
-        self.parking_detect_btn.grid(row=0, column=0, padx=(0, 5), pady=5)
-        
-        self.parking_stop_btn = ttk.Button(cf, text="Stop Detection", command=self._stop_parking_detection, state=tk.DISABLED)
-        self.parking_stop_btn.grid(row=0, column=1, padx=5, pady=5)
-        
-        self.parking_save_btn = ttk.Button(cf, text="Save Violations", command=self._save_parking_violations, state=tk.DISABLED)
-        self.parking_save_btn.grid(row=0, column=2, padx=5, pady=5)
-        
-        # Add display area with resizable paned window
-        display_frame = ttk.Frame(tab, style="Main.TFrame")
-        display_frame.grid(row=3, column=0, sticky="nsew", padx=5, pady=5)
-        display_frame.columnconfigure(0, weight=1)
-        display_frame.rowconfigure(0, weight=1)
-        
-        # Create a PanedWindow for resizable sections
-        self.parking_paned = ttk.PanedWindow(display_frame, orient=tk.HORIZONTAL)
-        self.parking_paned.grid(row=0, column=0, sticky="nsew")
-        
-        # Left side - Video display
-        video_display = ttk.LabelFrame(self.parking_paned, text="Video Feed", padding="5 5")
-        
-        # Create a frame for the video and controls
-        video_content_frame = ttk.Frame(video_display)
-        video_content_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Video display area
-        self.parking_video_label = ttk.Label(video_content_frame)
-        self.parking_video_label.pack(fill=tk.BOTH, expand=True)
-        
-        # Add resize controls
-        resize_frame = ttk.Frame(video_content_frame)
-        resize_frame.pack(fill=tk.X, pady=(5, 0))
-        
-        ttk.Label(resize_frame, text="Video Size:").pack(side=tk.LEFT, padx=(0, 5))
-        
-        # Create a scale for resizing
-        self.video_size_var = tk.DoubleVar(value=1.0)  # Default scale factor
-        size_scale = ttk.Scale(
-            resize_frame, 
-            from_=0.5, 
-            to=2.0, 
-            orient=tk.HORIZONTAL,
-            variable=self.video_size_var,
-            command=self._resize_video_feed
-        )
-        size_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        
-        # Add reset button
-        ttk.Button(
-            resize_frame, 
-            text="Reset", 
-            command=lambda: [self.video_size_var.set(1.0), self._resize_video_feed(1.0)]
-        ).pack(side=tk.LEFT, padx=5)
-        
-        # Display current scale factor
-        self.scale_label = ttk.Label(resize_frame, text="100%")
-        self.scale_label.pack(side=tk.LEFT, padx=5)
-        
-        # Right side - Violations list
-        violations_frame = ttk.LabelFrame(self.parking_paned, text="Detected Violations", padding="5 5")
-        
-        # Create a Treeview to display violations
-        self.violations_tree = ttk.Treeview(violations_frame, columns=("time", "location", "duration"), show="headings")
-        self.violations_tree.heading("time", text="Time")
-        self.violations_tree.heading("location", text="Location")
-        self.violations_tree.heading("duration", text="Duration")
-        self.violations_tree.column("time", width=100)
-        self.violations_tree.column("location", width=150)
-        self.violations_tree.column("duration", width=100)
-        
-        scrollbar = ttk.Scrollbar(violations_frame, orient="vertical", command=self.violations_tree.yview)
-        self.violations_tree.configure(yscrollcommand=scrollbar.set)
-        
-        self.violations_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        # Add the panes to the paned window
-        self.parking_paned.add(video_display, weight=3)  # Video takes more space by default
-        self.parking_paned.add(violations_frame, weight=2)
-        
-        # Status bar
-        status_frame = ttk.Frame(tab, style="Main.TFrame")
-        status_frame.grid(row=4, column=0, sticky="ew", padx=5, pady=(0, 5))
-        
-        status_label = ttk.Label(status_frame, textvariable=self.parking_status_var, style="Status.TLabel")
-        status_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        
-        return tab
         
     def _resize_video_feed(self, value):
         """Resize the video feed based on the scale value"""
@@ -216,33 +86,33 @@ class ParkingDetectionApp(YOLODetectionApp):
             self._update_parking_video_display(self.current_parking_frame, scale_factor=scale_factor)
     
     def _update_parking_video_display(self, frame, scale_factor=None):
-        """Update the parking video display with the current frame"""
+        """Update the parking video display with the current frame, fitted to label."""
         if frame is None:
             return
-            
-        # Store the current frame for potential resize operations
+
         self.current_parking_frame = frame
-        
-        # Use the scale factor from the slider if not explicitly provided
-        if scale_factor is None:
-            scale_factor = self.video_size_var.get()
-        
-        # Get original dimensions
-        height, width = frame.shape[:2]
-        
-        # Calculate new dimensions
-        new_width = int(width * scale_factor)
-        new_height = int(height * scale_factor)
-        
-        # Resize the frame
+
+        # Get the display label's size
+        label_width = self.parking_video_label.winfo_width()
+        label_height = self.parking_video_label.winfo_height()
+
+        # Fallback to frame size if label size is not yet set
+        if label_width < 10 or label_height < 10:
+            height, width = frame.shape[:2]
+            label_width, label_height = width, height
+
+        # Resize frame to fit label while keeping aspect ratio
+        frame_height, frame_width = frame.shape[:2]
+        scale = min(label_width / frame_width, label_height / frame_height)
+        new_width = int(frame_width * scale)
+        new_height = int(frame_height * scale)
         resized_frame = cv2.resize(frame, (new_width, new_height))
-        
+
         # Convert to PhotoImage and display
         img = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(img)
         photo = ImageTk.PhotoImage(image=img)
-        
-        # Update the label
+
         self.parking_video_label.config(image=photo)
         self.parking_video_label.image = photo  # Keep a reference
         

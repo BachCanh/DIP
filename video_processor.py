@@ -18,6 +18,7 @@ class VideoProcessor(threading.Thread):
         self.total_frames = 0
         self.accumulated_counts = {name: 0 for name in detector.class_names.values()} if detector else {}
 
+
     def stop(self):
         self.running = False
 

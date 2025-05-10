@@ -225,6 +225,107 @@ def setup_settings_tab(parent, app_instance):
     ttk.Label(about_frame, text=about_text, justify=tk.LEFT, style="TLabelframe.Label").pack(anchor=tk.W, padx=5, pady=5)
 
     return tab
+def setup_parking_tab(notebook, app):
+    """Create and return the Parking Detection tab."""
+    tab = ttk.Frame(notebook, padding="5 5 5 5", style="Main.TFrame")
+    tab.columnconfigure(0, weight=1)
+    tab.rowconfigure(3, weight=1)
+
+    # --- File frame ---
+    ff = ttk.LabelFrame(tab, text="Parking Detection Source", padding="10 10")
+    ff.grid(row=0, column=0, sticky="ew", padx=5, pady=(5, 10))
+    ff.columnconfigure(1, weight=1)
+    ttk.Label(ff, text="Select Video:").grid(row=0, column=0, padx=(0, 5), pady=5, sticky="w")
+    ttk.Entry(ff, textvariable=app.parking_video_path_var, width=50).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+    ttk.Button(ff, text="Browse...", command=app._browse_parking_video).grid(row=0, column=2, padx=5, pady=5)
+
+    # --- Zone configuration frame ---
+    zf = ttk.LabelFrame(tab, text="Parking Zone Configuration", padding="10 10")
+    zf.grid(row=1, column=0, sticky="ew", padx=5, pady=(0, 10))
+    zf.columnconfigure(1, weight=1)
+    ttk.Label(zf, text="Zone File:").grid(row=0, column=0, padx=(0, 5), pady=5, sticky="w")
+    ttk.Entry(zf, textvariable=app.current_zone_file, width=40).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+    ttk.Button(zf, text="Browse...", command=app._browse_zone_file).grid(row=0, column=2, padx=5, pady=5)
+    ttk.Button(zf, text="Load Zones", command=app._load_parking_zones).grid(row=0, column=3, padx=5, pady=5)
+    ttk.Button(zf, text="Edit Zones", command=app._open_zone_editor).grid(row=0, column=4, padx=5, pady=5)
+
+    # --- Control frame ---
+    cf = ttk.Frame(tab, padding="5 0", style="Main.TFrame")
+    cf.grid(row=2, column=0, sticky="ew", padx=5, pady=(0, 10))
+    cf.columnconfigure(3, weight=1)
+    app.parking_detect_btn = ttk.Button(cf, text="Start Detection", command=app._start_parking_detection)
+    app.parking_detect_btn.grid(row=0, column=0, padx=(0, 5), pady=5)
+    app.parking_stop_btn = ttk.Button(cf, text="Stop Detection", command=app._stop_parking_detection, state=tk.DISABLED)
+    app.parking_stop_btn.grid(row=0, column=1, padx=5, pady=5)
+    app.parking_save_btn = ttk.Button(cf, text="Save Violations", command=app._save_parking_violations, state=tk.DISABLED)
+    app.parking_save_btn.grid(row=0, column=2, padx=5, pady=5)
+
+    # --- Display area with resizable paned window ---
+    display_frame = ttk.Frame(tab, style="Main.TFrame")
+    display_frame.grid(row=3, column=0, sticky="nsew", padx=5, pady=5)
+    display_frame.columnconfigure(0, weight=1)
+    display_frame.rowconfigure(0, weight=1)
+    app.parking_paned = ttk.PanedWindow(display_frame, orient=tk.HORIZONTAL)
+    app.parking_paned.grid(row=0, column=0, sticky="nsew")
+
+    # Left: Video display
+    video_display = ttk.LabelFrame(app.parking_paned, text="Video Feed", padding="5 5")
+    video_content_frame = ttk.Frame(video_display)
+    video_content_frame.pack(fill=tk.BOTH, expand=True)
+    app.parking_video_label = ttk.Label(video_content_frame)
+    app.parking_video_label.pack(fill=tk.BOTH, expand=True)
+
+    # Resize controls
+    resize_frame = ttk.Frame(video_content_frame)
+    resize_frame.pack(fill=tk.X, pady=(5, 0))
+    ttk.Label(resize_frame, text="Video Size:").pack(side=tk.LEFT, padx=(0, 5))
+    app.video_size_var = tk.DoubleVar(value=1.0)
+    size_scale = ttk.Scale(
+        resize_frame,
+        from_=0.5,
+        to=2.0,
+        orient=tk.HORIZONTAL,
+        variable=app.video_size_var,
+        command=app._resize_video_feed
+    )
+    size_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+    ttk.Button(
+        resize_frame,
+        text="Reset",
+        command=lambda: [app.video_size_var.set(1.0), app._resize_video_feed(1.0)]
+    ).pack(side=tk.LEFT, padx=5)
+    app.scale_label = ttk.Label(resize_frame, text="100%")
+    app.scale_label.pack(side=tk.LEFT, padx=5)
+
+    # Right: Violations list
+    violations_frame = ttk.LabelFrame(app.parking_paned, text="Detected Violations", padding="5 5")
+    app.violations_tree = ttk.Treeview(
+        violations_frame,
+        columns=("time", "location", "duration"),
+        show="headings"
+    )
+    app.violations_tree.heading("time", text="Time")
+    app.violations_tree.heading("location", text="Location")
+    app.violations_tree.heading("duration", text="Duration")
+    app.violations_tree.column("time", width=100)
+    app.violations_tree.column("location", width=150)
+    app.violations_tree.column("duration", width=100)
+    scrollbar = ttk.Scrollbar(violations_frame, orient="vertical", command=app.violations_tree.yview)
+    app.violations_tree.configure(yscrollcommand=scrollbar.set)
+    app.violations_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+    app.parking_paned.add(video_display, weight=3)
+    app.parking_paned.add(violations_frame, weight=2)
+
+    # --- Status bar ---
+    status_frame = ttk.Frame(tab, style="Main.TFrame")
+    status_frame.grid(row=4, column=0, sticky="ew", padx=5, pady=(0, 5))
+    status_label = ttk.Label(status_frame, textvariable=app.parking_status_var, style="Status.TLabel")
+    status_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+    return tab
+
 
 # --- Status Bar ---
 def create_status_bar(parent, status_var):

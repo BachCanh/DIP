@@ -13,7 +13,7 @@ class ParkingZoneDetector:
         self.legal_zones = []      # List of legal parking zone polygons
         self.illegal_zones = []    # List of illegal parking zone polygons
         self.detection_history = {}  # Track detections over time
-        self.persistence_threshold = 5  # Number of frames to confirm illegal parking
+        self.persistence_threshold = 15  # Number of frames to confirm illegal parking
         self.zone_colors = {
             'legal': (0, 255, 0),     # Green for legal zones
             'illegal': (0, 0, 255),   # Red for illegal zones

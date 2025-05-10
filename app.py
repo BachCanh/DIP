@@ -10,7 +10,7 @@ from tkinter import filedialog, ttk, messagebox, StringVar
 # Import refactored components
 import config
 from yolo_detector import YOLODetector
-from ui_components import setup_styles, create_banner, setup_image_tab, setup_video_tab, setup_settings_tab, create_status_bar, display_image_on_label
+from ui_components import setup_styles, create_banner, setup_image_tab, setup_video_tab, create_status_bar, display_image_on_label
 from video_processor import VideoProcessor
 
 class YOLODetectionApp:
@@ -24,14 +24,17 @@ class YOLODetectionApp:
              self.root.after(100, self.root.destroy) # Schedule closing
              return
 
-        self.settings = self._load_initial_settings() # Load settings from file or use defaults
-        self.conf_threshold = 0.5
         # --- State Variables ---
         self.image_path_var = StringVar()
         self.video_path_var = StringVar()
-        self.output_dir_var = StringVar(value=self.settings.get("output_directory", config.DEFAULT_OUTPUT_DIR))
+        self.output_dir_var = StringVar(value=config.DEFAULT_OUTPUT_DIR)
         self.status_var = StringVar(value="Ready.")
-        self.confidence_threshold = self.settings.get("confidence_threshold", config.DEFAULT_CONFIDENCE)
+        self.confidence_threshold = config.DEFAULT_CONFIDENCE
+        
+        # Set all classes to be detected by default
+        self.class_vars = {}
+        for idx, class_name in enumerate(self.detector.class_names):
+            self.class_vars[idx] = tk.BooleanVar(value=True)
 
         # Video processing state
         self.video_thread = None
@@ -47,11 +50,10 @@ class YOLODetectionApp:
         create_status_bar(self.root, self.status_var)
         self.center_window(root)
 
-        # Apply loaded/default settings to UI elements
-        self._apply_settings_to_ui()
         self.update_status(self.detector.gpu_info, clear_after=5000) # Show GPU info briefly
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        
     def center_window(self, root, width=None, height=None):
         root.update_idletasks()  # Make sure layout is updated
 
@@ -84,11 +86,9 @@ class YOLODetectionApp:
         # Pass `self` so the UI functions can access app's variables and methods
         image_tab = setup_image_tab(notebook, self)
         video_tab = setup_video_tab(notebook, self)
-        settings_tab = setup_settings_tab(notebook, self)
 
         notebook.add(image_tab, text=" Image Detection ")
         notebook.add(video_tab, text=" Video Detection ")
-      
 
     def update_status(self, message, clear_after=0):
         self.status_var.set(message)
@@ -143,7 +143,7 @@ class YOLODetectionApp:
 
         selected_classes = self._get_selected_classes()
         if not selected_classes:
-            messagebox.showwarning("No Classes", "Select classes to detect in Settings.")
+            messagebox.showwarning("No Classes", "No object classes selected for detection.")
             return
 
         self.update_status("Processing image...")
@@ -198,7 +198,7 @@ class YOLODetectionApp:
 
         selected_classes = self._get_selected_classes()
         if not selected_classes:
-            messagebox.showwarning("No Classes", "Select classes to detect in Settings.")
+            messagebox.showwarning("No Classes", "No object classes selected for detection.")
             return
 
         self.processing_video = True
@@ -296,108 +296,6 @@ class YOLODetectionApp:
              self.update_status("Video processing stopped by user.")
              messagebox.showinfo("Video Stopped", f"Video processing stopped.\nObjects detected (accumulated): {total_final}")
 
-
-    # --- Settings Management ---
-    def _load_initial_settings(self):
-        """Loads settings on startup."""
-        if os.path.exists(config.SETTINGS_FILE):
-            try:
-                with open(config.SETTINGS_FILE, 'r') as f:
-                    loaded_settings = json.load(f)
-                    print(f"Settings loaded from {config.SETTINGS_FILE}")
-                    return loaded_settings
-            except (json.JSONDecodeError, IOError) as e:
-                print(f"Warning: Could not load settings file ({config.SETTINGS_FILE}): {e}")
-        # Return defaults if file doesn't exist or fails to load
-        return {
-            "confidence_threshold": config.DEFAULT_CONFIDENCE,
-            "output_directory": config.DEFAULT_OUTPUT_DIR,
-            "classes": {} # Default to empty, will be populated by UI setup
-        }
-
-    def _apply_settings_to_ui(self):
-        """Updates UI elements based on current self.settings."""
-        # Confidence
-        conf = self.settings.get("confidence_threshold", config.DEFAULT_CONFIDENCE)
-        self.confidence_threshold = conf # Update internal variable too
-        self.conf_scale.set(conf)
-        self.update_conf_display(conf) # Update label
-
-        # Output Directory
-        out_dir = self.settings.get("output_directory", config.DEFAULT_OUTPUT_DIR)
-        self.output_dir_var.set(out_dir)
-
-        # Class Filters
-        loaded_classes = self.settings.get("classes", {})
-        # Check if class_vars has been initialized
-        if hasattr(self, 'class_vars') and self.class_vars:
-            for idx_str, is_enabled in loaded_classes.items():
-                 try:
-                     idx = int(idx_str)
-                     if idx in self.class_vars:
-                         self.class_vars[idx].set(bool(is_enabled))
-                 except ValueError:
-                     print(f"Warning: Invalid class index '{idx_str}' in settings.")
-        # If class_vars aren't ready yet (e.g., during init), they'll be set to True
-        # by default in setup_settings_tab and can be loaded later if needed.
-
-
-    def update_conf_display(self, value):
-        self.conf_label.config(text=f"{float(value):.2f}")
-        # Note: self.confidence_threshold is updated in apply_settings or directly
-
-    def apply_settings(self):
-        """Applies settings from UI to the application state immediately."""
-        self.confidence_threshold = self.conf_scale.get()
-        # Output dir is already linked via StringVar
-        # Class filters are already linked via BooleanVars
-        self.settings["confidence_threshold"] = self.confidence_threshold
-        self.settings["output_directory"] = self.output_dir_var.get()
-        self.settings["classes"] = {str(idx): var.get() for idx, var in self.class_vars.items()}
-
-        self.update_status(f"Settings applied. Confidence: {self.confidence_threshold:.2f}")
-        messagebox.showinfo("Settings Applied", "Current detection settings updated.")
-
-    def save_settings(self):
-        """Saves the current UI settings to the JSON file."""
-        # Ensure internal settings dict is up-to-date with UI
-        self.apply_settings() # First apply UI to internal state/dict
-
-        os.makedirs(config.SETTINGS_DIR, exist_ok=True)
-        try:
-            with open(config.SETTINGS_FILE, 'w') as f:
-                json.dump(self.settings, f, indent=4)
-            self.update_status(f"Settings saved to {config.SETTINGS_FILE}")
-            messagebox.showinfo("Settings Saved", f"Settings saved to\n{config.SETTINGS_FILE}")
-        except IOError as e:
-            messagebox.showerror("Save Error", f"Failed to save settings:\n{e}")
-            self.update_status("Error saving settings.")
-
-    def load_settings(self):
-        """Loads settings from file and applies them to the UI."""
-        self.settings = self._load_initial_settings() # Reload from file or get defaults
-        self._apply_settings_to_ui()
-        self.update_status("Settings loaded.")
-        messagebox.showinfo("Settings Loaded", "Settings loaded and applied from file (or defaults if file not found).")
-
-
-    def reset_settings(self):
-        """Resets settings to default values and updates UI."""
-        # Reset internal settings dictionary to defaults
-        self.settings = {
-            "confidence_threshold": config.DEFAULT_CONFIDENCE,
-            "output_directory": config.DEFAULT_OUTPUT_DIR,
-            "classes": {str(idx): True for idx in self.class_vars.keys()} # Enable all classes
-        }
-        # Apply these defaults to the UI
-        self._apply_settings_to_ui()
-        # Also ensure internal variables are updated
-        self.confidence_threshold = config.DEFAULT_CONFIDENCE
-
-        self.update_status("Settings reset to defaults.")
-        messagebox.showinfo("Settings Reset", "Settings reset to default values.")
-
-
     # --- Saving Results ---
     def save_results(self, source_type):
         if self.current_frame is None:
@@ -441,7 +339,6 @@ class YOLODetectionApp:
         except Exception as e:
              messagebox.showerror("Save Error", f"Failed to save results:\n{e}")
              self.update_status("Error saving results.")
-
 
     # --- Application Closing ---
     def on_closing(self):
