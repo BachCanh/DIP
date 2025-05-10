@@ -30,6 +30,7 @@ class ParkingDetectionApp(YOLODetectionApp):
         self.snapshot_interval = 30  # Seconds between snapshots of violations
         self.last_snapshot_time = {}  # Track last snapshot time per violation
         self.detector = YOLODetector()
+        self.conf_threshold = 0.5 
         self.is_processing_paused_for_editor = False # Add this flag
         
         self.parking_video_path_var = tk.StringVar()
@@ -335,6 +336,14 @@ class ParkingDetectionApp(YOLODetectionApp):
         self.detection_running = True
         
         threading.Thread(target=self._run_parking_detection, daemon=True).start()
+    def _draw_boxes_and_labels(self, frame, detections):
+        for box, conf, cls in detections:
+            x1, y1, x2, y2 = map(int, box)
+            label = f"{self.detector.class_names[int(cls)]} {conf:.2f}"
+            color = (0, 255, 0)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+        return frame
     
     def _run_parking_detection(self):
         """Run the parking violation detection process"""
@@ -379,7 +388,8 @@ class ParkingDetectionApp(YOLODetectionApp):
                     (box, conf, cls) for box, conf, cls in detections 
                     if int(cls) in vehicle_classes and conf > self.conf_threshold
                 ]
-                
+                annotated_frame = frame.copy()
+                annotated_frame = self._draw_boxes_and_labels(annotated_frame,  vehicle_detections)
                 # Check for illegal parking
                 annotated_frame, illegal_events = self.zone_detector.check_illegal_parking(
                     frame, vehicle_detections
@@ -406,6 +416,8 @@ class ParkingDetectionApp(YOLODetectionApp):
             messagebox.showerror("Error", f"Detection error: {str(e)}")
         finally:
             self._reset_parking_detection_ui()
+
+    
     
     def _process_illegal_events(self, events, frame):
         """Process detected illegal parking events"""
