@@ -19,7 +19,7 @@ class ParkingZoneDetector:
             'illegal': (0, 0, 255),   # Red for illegal zones
             'warning': (0, 165, 255)  # Orange for warnings
         }
-        self.config_dir = "./parking_zones/"
+        self.config_dir = "./parking_zones"
         os.makedirs(self.config_dir, exist_ok=True)
 
     def play_warning_sound(self, sound_file="sounds/alert.mp3"):
@@ -64,8 +64,8 @@ class ParkingZoneDetector:
         with open(filepath, 'r') as f:
             data = json.load(f)
 
-        self.legal_zones = [np.array(zone) for zone in data.get("legal_zones", [])]
-        self.illegal_zones = [np.array(zone) for zone in data.get("illegal_zones", [])]
+        self.legal_zones = [np.array(zone) for zone in data.get("legal", [])]
+        self.illegal_zones = [np.array(zone) for zone in data.get("illegal", [])]
         return True
 
     def is_point_in_any_zone(self, point, zone_list):

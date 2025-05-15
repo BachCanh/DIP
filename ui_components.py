@@ -239,15 +239,7 @@ def setup_parking_tab(notebook, app):
     ttk.Entry(ff, textvariable=app.parking_video_path_var, width=50).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
     ttk.Button(ff, text="Browse...", command=app._browse_parking_video).grid(row=0, column=2, padx=5, pady=5)
 
-    # --- Zone configuration frame ---
-    zf = ttk.LabelFrame(tab, text="Parking Zone Configuration", padding="10 10")
-    zf.grid(row=1, column=0, sticky="ew", padx=5, pady=(0, 10))
-    zf.columnconfigure(1, weight=1)
-    ttk.Label(zf, text="Zone File:").grid(row=0, column=0, padx=(0, 5), pady=5, sticky="w")
-    ttk.Entry(zf, textvariable=app.current_zone_file, width=40).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-    ttk.Button(zf, text="Browse...", command=app._browse_zone_file).grid(row=0, column=2, padx=5, pady=5)
-    ttk.Button(zf, text="Load Zones", command=app._load_parking_zones).grid(row=0, column=3, padx=5, pady=5)
-    ttk.Button(zf, text="Edit Zones", command=app._open_zone_editor).grid(row=0, column=4, padx=5, pady=5)
+  
 
     # --- Control frame ---
     cf = ttk.Frame(tab, padding="5 0", style="Main.TFrame")
