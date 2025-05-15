@@ -3,8 +3,8 @@ import torch
 from ultralytics import YOLO
 import config
 
-class YOLODetector:
-    def __init__(self, model_path=config.MODEL_PATH):
+class CarDetector:
+    def __init__(self, model_path=config.CAR_PATH):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = self._load_model(model_path)
         self.class_names = self.model.names if self.model else {}

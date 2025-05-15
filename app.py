@@ -9,14 +9,14 @@ from tkinter import filedialog, ttk, messagebox, StringVar
 
 # Import refactored components
 import config
-from yolo_detector import YOLODetector
+from car_detector import CarDetector
 from ui_components import setup_styles, create_banner, setup_image_tab, setup_video_tab, create_status_bar, display_image_on_label
 from video_processor import VideoProcessor
 
 class YOLODetectionApp:
     def __init__(self, root):
         self.root = root
-        self.detector = YOLODetector() # Initialize detector
+        self.detector = CarDetector() # Initialize detector
 
         # Check if model loaded successfully
         if not self.detector.model:

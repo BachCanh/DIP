@@ -3,7 +3,8 @@ import os
 
 # --- Model ---
 # IMPORTANT: Adjust this path relative to where main.py is run
-MODEL_PATH = "runs/train_cars_20250422_090512/yolov8n/weights/best.pt"
+CAR_PATH = "runs/train_cars_20250422_090512/yolov8n/weights/best.pt"
+SIDEWALK_PATH = "runs/parking_seg_20250515_172134/yolov8n/weights/best.pt"
 
 # --- Settings ---
 SETTINGS_DIR = "./config"

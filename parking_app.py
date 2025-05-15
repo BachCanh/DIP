@@ -11,7 +11,7 @@ import threading
 # Import base components
 from app import YOLODetectionApp
 import config
-from yolo_detector import YOLODetector
+from car_detector import CarDetector
 from ui_components import setup_parking_tab
 from parking_zone_detector import ParkingZoneDetector
 from ui_components import setup_styles, create_banner, display_image_on_label, create_status_bar
@@ -29,7 +29,7 @@ class ParkingDetectionApp(YOLODetectionApp):
         self.illegal_alerts = []  # Track illegal parking alerts
         self.snapshot_interval = 30  # Seconds between snapshots of violations
         self.last_snapshot_time = {}  # Track last snapshot time per violation
-        self.detector = YOLODetector()
+        self.detector = CarDetector()
         self.conf_threshold = 0.5 
         self.is_processing_paused_for_editor = False # Add this flag
         
