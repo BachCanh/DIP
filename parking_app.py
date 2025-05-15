@@ -90,7 +90,7 @@ class ParkingDetectionApp(YOLODetectionApp):
             return
 
         file_path = filedialog.askopenfilename(
-            title="Select Video for Sidewalk Zone Generation",
+            title="Select Video for Processing",
             filetypes=(("Video files", "*.mp4 *.avi *.mov *.mkv"), ("All files", "*.*"))
         )
         if not file_path:
@@ -99,16 +99,15 @@ class ParkingDetectionApp(YOLODetectionApp):
         self.parking_video_path_var.set(file_path)
         self.update_status(f"Video selected: {os.path.basename(file_path)}. Starting sidewalk scan...")
         
-        # Update UI: Disable "Browse", "Start Car Violation"; Enable "Stop Sidewalk Scan"
+        # Update UI: Disable buttons during processing
         if hasattr(self, 'browse_video_btn'): self.browse_video_btn.config(state=tk.DISABLED)
         if hasattr(self, 'parking_detect_btn'): self.parking_detect_btn.config(state=tk.DISABLED)
         if hasattr(self, 'stop_sidewalk_scan_btn'): self.stop_sidewalk_scan_btn.config(state=tk.NORMAL)
         if hasattr(self, 'parking_stop_btn'): self.parking_stop_btn.config(state=tk.DISABLED)
 
-
         self.sidewalk_detection_running = True
         threading.Thread(target=self._process_video_for_first_sidewalk, 
-                         args=(file_path,), daemon=True).start()
+                        args=(file_path,), daemon=True).start()
 
     def _stop_sidewalk_scan_process(self): # Renamed for clarity
         """Connected to a 'Stop Sidewalk Scan' button in UI."""
@@ -133,9 +132,11 @@ class ParkingDetectionApp(YOLODetectionApp):
         sidewalk_polygons_saved_and_loaded = False
         target_sidewalk_class_names = ['sidewalk-and-stair-image', 'sidewalk','stair'] # Case-insensitive check later
         
-        # Get source FPS for sleep calculation, if needed, though UI updates dominate
+        # Get source FPS for sleep calculation, if needed
         source_fps = cap.get(cv2.CAP_PROP_FPS)
         if source_fps <= 0: source_fps = 30 # Default
+
+        self.update_status("Scanning for sidewalks in background...")
 
         while self.sidewalk_detection_running: # Loop controlled by the flag
             ret, frame = cap.read()
@@ -148,18 +149,13 @@ class ParkingDetectionApp(YOLODetectionApp):
             loop_start_time = time.time()
 
             # Update status less frequently to avoid flooding
-            if frame_num % 5 == 0 or frame_num == 1 : # Update every 5 frames or on the first frame
+            if frame_num % 30 == 0 or frame_num == 1 : # Update every 30 frames or on the first frame
                 self.update_status(f"Scanning frame {frame_num} for sidewalk...")
 
             annotated_frame_from_segmentor, polygons_by_class, error = \
                 self.sidewalk_segmentor_instance.predict_and_get_polygons(frame.copy(), confidence=0.3) 
 
-            # Display the current frame being processed in the UI
-            # Use the annotated frame if available, otherwise the original
-            current_display_frame = annotated_frame_from_segmentor if annotated_frame_from_segmentor is not None and annotated_frame_from_segmentor.size > 0 else frame
-            if hasattr(self, 'parking_video_label') and self.parking_video_label.winfo_exists():
-                 self.root.after(0, self._update_parking_video_display, current_display_frame)
-
+            # Don't display frames during scan - removed the display code
 
             if error:
                 if frame_num % 10 == 0 : # Log error less frequently
@@ -189,37 +185,52 @@ class ParkingDetectionApp(YOLODetectionApp):
                 try:
                     with open(zone_file_path, 'w') as f:
                         json.dump(parking_zones_data, f, indent=4)
-                    self.update_status(f"Zones from sidewalk saved as '{auto_zone_filename}'. Attempting to load...")
+                    self.update_status(f"Zones from sidewalk saved. Starting car violation detection...")
 
                     if self.zone_detector.load_zones(auto_zone_filename):
-                        self.update_status(f"Zones from '{auto_zone_filename}' loaded. Sidewalk scan complete.")
-                        sidewalk_polygons_saved_and_loaded = True
-                        # Keep showing the frame where sidewalk was found
-                        self.root.after(0, self._update_parking_video_display, current_display_frame)
+                        self.sidewalk_detection_running = False # Signal loop to stop
+                        
+                        # Start car violation detection automatically after finding sidewalk
+                        # Schedule on main thread to ensure thread safety
+                        self.root.after(0, self._auto_start_car_detection_after_sidewalk)
                     else:
                         self.update_status(f"Failed to load '{auto_zone_filename}'. Load manually.", error=True)
                 except Exception as e:
                     self.update_status(f"Error saving/loading auto-zones: {e}", error=True)
                 
-                self.sidewalk_detection_running = False # Signal loop to stop
-                # The break will happen in the next iteration due to the flag change.
-                # Or, we can break immediately:
-                break 
-            
-            # Control processing speed for UI responsiveness, especially if predict_and_get_polygons is fast
-            # This sleep is crucial if the processing loop is very fast.
-            # It gives Tkinter time to process its event queue (like button presses for stop_sidewalk_scan_btn)
-            # Adjust sleep time as needed. 0.02 is 50 FPS, 0.033 is 30 FPS.
-            # Subtract processing time to aim for a target display rate.
+                break # Exit the loop after finding a sidewalk
+                
+            # Process frames faster without display
             frame_proc_time = time.time() - loop_start_time
-            sleep_duration = max(0.001, (1.0 / 20) - frame_proc_time) # Target ~20 FPS for this scan display
+            sleep_duration = max(0.001, (1.0 / 60) - frame_proc_time) # Can process faster now (60 FPS target)
             time.sleep(sleep_duration)
-
 
         cap.release()
         self.sidewalk_detection_running = False # Explicitly set false again after loop
-        # Schedule the UI reset to run on the main Tkinter thread
-        self.root.after(0, self._reset_ui_after_sidewalk_scan, sidewalk_polygons_saved_and_loaded)
+        
+        # Only reset UI if we didn't automatically start car detection
+        if not sidewalk_polygons_saved_and_loaded:
+            # Schedule the UI reset to run on the main Tkinter thread
+            self.root.after(0, self._reset_ui_after_sidewalk_scan, False)
+
+    def _auto_start_car_detection_after_sidewalk(self):
+        """Automatically start car violation detection after sidewalk is found."""
+        self.update_status("Sidewalk found. Starting car violation detection...")
+        
+        # Configure UI buttons before starting
+        if hasattr(self, 'parking_detect_btn'): self.parking_detect_btn.config(state=tk.DISABLED)
+        if hasattr(self, 'parking_stop_btn'): self.parking_stop_btn.config(state=tk.NORMAL)
+        if hasattr(self, 'browse_video_btn'): self.browse_video_btn.config(state=tk.DISABLED)
+        if hasattr(self, 'stop_sidewalk_scan_btn'): self.stop_sidewalk_scan_btn.config(state=tk.DISABLED)
+        
+        # Clear previous violations if any
+        if hasattr(self, 'violations_tree'): self.violations_tree.delete(*self.violations_tree.get_children())
+        self.illegal_alerts = []
+        self.last_snapshot_time = {}
+        
+        # Start car violation detection process
+        self.car_violation_detection_running = True
+        threading.Thread(target=self._run_car_violation_detection, daemon=True).start()
 
     def _reset_ui_after_sidewalk_scan(self, zones_were_loaded_successfully=False):
         """Resets UI elements after the sidewalk scan process. Called from main thread."""
@@ -518,29 +529,31 @@ class ParkingDetectionApp(YOLODetectionApp):
 
     def _take_violation_snapshot(self, frame, bbox, violation_id, timestamp):
         try:
-            snap_dir = os.path.join("output", "car_snapshots") # Changed dir name slightly
+            snap_dir = os.path.join("output", "car_snapshots")
             os.makedirs(snap_dir, exist_ok=True)
-            x1,y1,x2,y2 = map(int, bbox); margin=20; h,w=frame.shape[:2]
-            # Ensure coordinates are valid after adding margin
-            sx1,sy1 = max(0, x1 - margin), max(0, y1 - margin)
-            sx2,sy2 = min(w, x2 + margin), min(h, y2 + margin)
-            
-            # Ensure the slice is valid
-            if sx1 >= sx2 or sy1 >= sy2: # If margin makes it invalid, use original bbox
-                 snapshot_region = frame[y1:y2, x1:x2].copy()
-            else:
-                 snapshot_region = frame[sy1:sy2, sx1:sx2].copy()
 
-            if snapshot_region.size == 0: 
-                print(f"Warning: Snapshot region for {violation_id} is empty.")
-                return
-            
-            filename = f"car_snap_{violation_id}_{timestamp.strftime('%Y%m%d_%H%M%S')}.jpg"
+            # Save the full frame with all current marks/boxes
+            filename = f"car_snap_full_{violation_id}_{timestamp.strftime('%Y%m%d_%H%M%S')}.jpg"
             filepath = os.path.join(snap_dir, filename)
-            if not cv2.imwrite(filepath, snapshot_region):
+
+            # Draw the violation box and label on a copy of the frame
+            annotated_frame = frame.copy()
+            x1, y1, x2, y2 = map(int, bbox)
+            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
+            cv2.putText(
+                annotated_frame,
+                "ILLEGAL PARKING",
+                (x1, max(y1 - 10, 0)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (0, 0, 255),
+                2,
+            )
+
+            if not cv2.imwrite(filepath, annotated_frame):
                 print(f"Warning: Failed to write snapshot {filepath}")
 
-        except Exception as e: 
+        except Exception as e:
             self.update_status(f"Snapshot error for {violation_id}: {e}", error=True)
             print(f"Full snapshot error: {e}, {type(e)}")
 
