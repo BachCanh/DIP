@@ -324,3 +324,67 @@ def create_status_bar(parent, status_var):
     status_bar = ttk.Label(parent, textvariable=status_var, relief=tk.SUNKEN, anchor=tk.W, padding="5 2", style="Status.TLabel")
     status_bar.pack(side=tk.BOTTOM, fill=tk.X)
     return status_bar
+
+def setup_review_tab(notebook, app):
+    """Create and return the Review tab for reviewing previously detected violations."""
+    tab = ttk.Frame(notebook, padding="5 5 5 5", style="Main.TFrame")
+    tab.columnconfigure(0, weight=1)
+    tab.rowconfigure(1, weight=1)
+    
+    # Control frame
+    cf = ttk.Frame(tab, padding="5 5", style="Main.TFrame")
+    cf.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
+    cf.columnconfigure(2, weight=1)
+    
+    ttk.Button(cf, text="Load Violations", command=app.load_violation_images).grid(row=0, column=0, padx=5, pady=5)
+    
+    # Navigation buttons
+    nav_frame = ttk.Frame(cf, style="Main.TFrame")
+    nav_frame.grid(row=0, column=1, padx=5, pady=5)
+    
+    ttk.Button(nav_frame, text="Previous", command=app.previous_violation).pack(side=tk.LEFT, padx=2)
+    ttk.Button(nav_frame, text="Next", command=app.next_violation).pack(side=tk.LEFT, padx=2)
+    
+    # Status label
+    app.review_status_var = tk.StringVar(value="No violations loaded")
+    status_label = ttk.Label(cf, textvariable=app.review_status_var)
+    status_label.grid(row=0, column=2, padx=5, pady=5, sticky="w")
+    
+    # Display frame
+    display_frame = ttk.Frame(tab, style="Main.TFrame")
+    display_frame.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
+    display_frame.columnconfigure(0, weight=3)
+    display_frame.columnconfigure(1, weight=1)
+    display_frame.rowconfigure(0, weight=1)
+    
+    # Image display on left
+    img_frame = ttk.Frame(display_frame, style="Main.TFrame")
+    img_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+    app.review_image_label = ttk.Label(img_frame, background='black')
+    app.review_image_label.pack(fill=tk.BOTH, expand=True)
+    
+    # Actions panel on right
+    action_frame = ttk.LabelFrame(display_frame, text="Review Actions")
+    action_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
+    
+    # File info
+    app.violation_info_var = tk.StringVar(value="No file selected")
+    ttk.Label(action_frame, textvariable=app.violation_info_var, wraplength=300).pack(fill=tk.X, padx=10, pady=10)
+    
+    # Decision buttons
+    decision_frame = ttk.Frame(action_frame)
+    decision_frame.pack(fill=tk.X, padx=10, pady=10)
+    
+    ttk.Button(decision_frame, text="Approve as Illegal", 
+               command=lambda: app.process_violation_decision(True)).pack(fill=tk.X, pady=5)
+    ttk.Button(decision_frame, text="Decline as Legal", 
+               command=lambda: app.process_violation_decision(False)).pack(fill=tk.X, pady=5)
+    
+    # Statistics
+    stats_frame = ttk.LabelFrame(action_frame, text="Statistics")
+    stats_frame.pack(fill=tk.X, padx=10, pady=10)
+    
+    app.review_stats_var = tk.StringVar(value="Total: 0\nApproved: 0\nDeclined: 0")
+    ttk.Label(stats_frame, textvariable=app.review_stats_var).pack(fill=tk.X, padx=5, pady=5)
+    
+    return tab

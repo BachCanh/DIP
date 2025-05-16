@@ -54,6 +54,14 @@ class ParkingDetectionApp(YOLODetectionApp):
         self._add_parking_tab()
         self._load_initial_zones()
 
+        # Initialize review tab variables
+        self.violation_images = []
+        self.current_violation_index = -1
+        self.violation_stats = {"total": 0, "approved": 0, "declined": 0}
+
+        # Call _add_review_tab after _add_parking_tab
+        self._add_review_tab()
+
     def _load_initial_zones(self):
         initial_zone_file = "parking_zones.json" 
         if os.path.exists(os.path.join(self.zone_detector.config_dir, initial_zone_file)):
@@ -651,6 +659,355 @@ class ParkingDetectionApp(YOLODetectionApp):
             # Resize the frame and update display
             self._update_parking_video_display(self.current_parking_frame, scale_factor=scale_factor)
 
+    # --- Review Tab Methods ---
+    def _add_review_tab(self):
+        """Add the review tab to the notebook."""
+        if not self.notebook: self._reorder_tabs()
+        if not self.notebook: messagebox.showerror("UI Error", "Notebook missing."); return
+        
+        # Import here to avoid circular imports
+        from ui_components import setup_review_tab
+        
+        review_tab = setup_review_tab(self.notebook, self)
+        self.notebook.add(review_tab, text=" Review Violations ")
+
+    def load_violation_images(self):
+        """Load new violation images from the output directory."""
+        self.violation_images = []
+        self.current_violation_index = -1
+        
+        # Create directories if they don't exist
+        fines_dir = os.path.join("Fines")
+        illegal_dir = os.path.join(fines_dir, "illegal")
+        legal_dir = os.path.join(fines_dir, "legal")
+        os.makedirs(illegal_dir, exist_ok=True)
+        os.makedirs(legal_dir, exist_ok=True)
+        
+        # Get all violation images
+        snapshots_dir = os.path.join("output", "car_snapshots")
+        if not os.path.exists(snapshots_dir):
+            self.review_status_var.set("No snapshots directory found")
+            return
+        
+        # Find all jpg files in the snapshots directory
+        image_files = [f for f in os.listdir(snapshots_dir) if f.lower().endswith('.jpg')]
+        
+        if not image_files:
+            self.review_status_var.set("No new violation images found")
+            return
+        
+        # Store file paths and update UI
+        self.violation_images = [os.path.join(snapshots_dir, f) for f in image_files]
+        self.violation_stats = {"total": len(self.violation_images), "approved": 0, "declined": 0}
+        self._update_review_stats()
+        
+        # Update the review mode
+        self.review_mode_var.set("Mode: New Violations")
+        
+        # Enable decision buttons
+        self.approve_btn.config(state=tk.NORMAL)
+        self.decline_btn.config(state=tk.NORMAL)
+        
+        # Show the first image
+        self.current_violation_index = 0
+        self._display_current_violation()
+        
+        self.review_status_var.set(f"Loaded {len(self.violation_images)} new violation images")
+
+    def load_illegal_reviews(self):
+        """Load previously approved illegal parking violations."""
+        self._load_reviewed_violations("illegal")
+    
+    def load_legal_reviews(self):
+        """Load previously declined legal parking violations."""
+        self._load_reviewed_violations("legal")
+
+    def _load_reviewed_violations(self, review_type):
+        """Load violations from Fines/illegal or Fines/legal directory."""
+        self.violation_images = []
+        self.current_violation_index = -1
+        
+        # Determine review source directory
+        review_dir = os.path.join("Fines", review_type)
+        if not os.path.exists(review_dir):
+            self.review_status_var.set(f"No {review_type} reviews directory found")
+            return
+        
+        # Find all jpg files in the reviews directory
+        image_files = [f for f in os.listdir(review_dir) if f.lower().endswith('.jpg')]
+        
+        if not image_files:
+            self.review_status_var.set(f"No {review_type} review images found")
+            return
+        
+        # Store file paths and update UI
+        self.violation_images = [os.path.join(review_dir, f) for f in image_files]
+        
+        # Update the review mode
+        mode_text = "Illegal Parking Reviews" if review_type == "illegal" else "Legal Parking Reviews"
+        self.review_mode_var.set(f"Mode: Viewing {mode_text}")
+        
+        # Disable decision buttons in review mode
+        self.approve_btn.config(state=tk.DISABLED)
+        self.decline_btn.config(state=tk.DISABLED)
+        
+        # Show counts rather than editable stats
+        self.review_stats_var.set(
+            f"Total {review_type.capitalize()} Reviews: {len(self.violation_images)}\n"
+            f"Currently viewing previously classified violations"
+        )
+        
+        # Show the first image
+        if self.violation_images:
+            self.current_violation_index = 0
+            self._display_current_violation()
+            
+        self.review_status_var.set(f"Loaded {len(self.violation_images)} {review_type} review images")
+
+    def _update_review_stats(self):
+        """Update the review statistics display."""
+        stats = self.violation_stats
+        self.review_stats_var.set(
+            f"Total: {stats['total']}\n"
+            f"Approved: {stats['approved']}\n"
+            f"Declined: {stats['declined']}\n"
+            f"Remaining: {stats['total'] - stats['approved'] - stats['declined']}"
+        )
+
+    def _display_current_violation(self):
+        """Display the current violation image."""
+        if not self.violation_images or self.current_violation_index < 0 or self.current_violation_index >= len(self.violation_images):
+            self.review_image_label.config(image=None)
+            self.violation_info_var.set("No image selected")
+            return
+        
+        # Get the current image path
+        image_path = self.violation_images[self.current_violation_index]
+        if not os.path.exists(image_path):
+            self.review_image_label.config(image=None)
+            self.violation_info_var.set(f"Image not found: {os.path.basename(image_path)}")
+            return
+        
+        # Load and display the image
+        try:
+            # Read image with OpenCV
+            img = cv2.imread(image_path)
+            if img is None:
+                self.violation_info_var.set(f"Failed to load image: {os.path.basename(image_path)}")
+                return
+                
+            # Get image dimensions
+            h, w = img.shape[:2]
+            
+            # Convert to RGB for display
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            
+            # Calculate dimensions to fit in the label
+            label_width = self.review_image_label.winfo_width()
+            label_height = self.review_image_label.winfo_height()
+            
+            if label_width < 20 or label_height < 20:
+                # Default size if label is not yet ready
+                label_width, label_height = 640, 480
+                
+            # Calculate scale to fit
+            scale = min(label_width / w, label_height / h)
+            new_w, new_h = int(w * scale), int(h * scale)
+            
+            # Resize image
+            if new_w > 0 and new_h > 0:
+                img_resized = cv2.resize(img_rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                
+                # Convert to PhotoImage
+                photo = ImageTk.PhotoImage(image=Image.fromarray(img_resized))
+                
+                # Update label
+                self.review_image_label.config(image=photo)
+                self.review_image_label.image = photo  # Keep reference
+                
+                # Update file info
+                filename = os.path.basename(image_path)
+                file_size = os.path.getsize(image_path) / 1024  # KB
+                
+                # Try to extract timestamp from filename
+                try:
+                    # Parse timestamp from car_snap_full_car_viol_YYYYMMDD_HHMMSS....jpg
+                    parts = filename.split('_')
+                    date_part = parts[-2]  # 20250515
+                    time_part = parts[-1].split('.')[0]  # 215031
+                    timestamp = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:]} {time_part[:2]}:{time_part[2:4]}:{time_part[4:]}"
+                except:
+                    timestamp = "Unknown"
+                
+                self.violation_info_var.set(
+                    f"File: {filename}\n"
+                    f"Size: {file_size:.1f} KB\n"
+                    f"Resolution: {w}x{h}\n"
+                    f"Time: {timestamp}\n"
+                    f"Image {self.current_violation_index + 1} of {len(self.violation_images)}"
+                )
+            
+        except Exception as e:
+            self.violation_info_var.set(f"Error displaying image: {str(e)}")
+
+    def next_violation(self):
+        """Move to the next violation image."""
+        if not self.violation_images:
+            return
+            
+        if self.current_violation_index < len(self.violation_images) - 1:
+            self.current_violation_index += 1
+            self._display_current_violation()
+
+    def previous_violation(self):
+        """Move to the previous violation image."""
+        if not self.violation_images:
+            return
+            
+        if self.current_violation_index > 0:
+            self.current_violation_index -= 1
+            self._display_current_violation()
+
+    def process_violation_decision(self, is_illegal):
+        """Process the user's decision about a violation by moving the file to the appropriate directory."""
+        if not self.violation_images or self.current_violation_index < 0 or self.current_violation_index >= len(self.violation_images):
+            return
+        
+        source_path = self.violation_images[self.current_violation_index]
+        if not os.path.exists(source_path):
+            messagebox.showerror("Error", f"Source file not found: {source_path}")
+            return
+        
+        # Determine target directory
+        fines_dir = os.path.join("Fines")
+        target_dir = os.path.join(fines_dir, "illegal" if is_illegal else "legal")
+        
+        # Create target filename with approval/decline prefix
+        filename = os.path.basename(source_path)
+        prefix = "approved_" if is_illegal else "declined_"
+        target_filename = prefix + filename
+        target_path = os.path.join(target_dir, target_filename)
+        
+        try:
+            # Create directories if they don't exist
+            os.makedirs(target_dir, exist_ok=True)
+            
+            # Move the file instead of copying it
+            import shutil
+            shutil.move(source_path, target_path)
+            
+            # Update statistics
+            if is_illegal:
+                self.violation_stats["approved"] += 1
+            else:
+                self.violation_stats["declined"] += 1
+                
+            self._update_review_stats()
+            
+            # Remove from the list
+            self.violation_images.pop(self.current_violation_index)
+            
+            # Adjust current index if needed
+            if self.current_violation_index >= len(self.violation_images) and len(self.violation_images) > 0:
+                self.current_violation_index = len(self.violation_images) - 1
+                
+            # Display next image or clear if no more
+            if self.violation_images:
+                self._display_current_violation()
+                decision_type = "illegal parking" if is_illegal else "legal parking"
+                self.review_status_var.set(f"Moved to {decision_type}. {len(self.violation_images)} remaining.")
+            else:
+                self.review_image_label.config(image=None)
+                self.violation_info_var.set("No more images to review")
+                self.review_status_var.set("All violations have been reviewed")
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to process decision: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
+
+def setup_review_tab(notebook, app):
+    """Create and return the Review tab for reviewing previously detected violations."""
+    tab = ttk.Frame(notebook, padding="5 5 5 5", style="Main.TFrame")
+    tab.columnconfigure(0, weight=1)
+    tab.rowconfigure(1, weight=1)
+    
+    # Control frame with better visual separation
+    cf = ttk.LabelFrame(tab, text="Violation Management", padding="5 5", style="Main.TFrame")
+    cf.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
+    
+    # Row 0: Image sources with better labeling
+    ttk.Label(cf, text="Image Sources:").grid(row=0, column=0, padx=(5,2), pady=5, sticky="w")
+    ttk.Button(cf, text="New Violations", 
+               command=app.load_violation_images).grid(row=0, column=1, padx=2, pady=5)
+    
+    # Row 1: Review previously classified violations
+    ttk.Label(cf, text="View Reviews:").grid(row=1, column=0, padx=(5,2), pady=5, sticky="w")
+    ttk.Button(cf, text="Illegal Parking", 
+               command=app.load_illegal_reviews).grid(row=1, column=1, padx=2, pady=5)
+    ttk.Button(cf, text="Legal Parking", 
+               command=app.load_legal_reviews).grid(row=1, column=2, padx=2, pady=5)
+    
+    # Row 2: Navigation controls
+    ttk.Label(cf, text="Navigation:").grid(row=2, column=0, padx=(5,2), pady=5, sticky="w")
+    nav_frame = ttk.Frame(cf, style="Main.TFrame")
+    nav_frame.grid(row=2, column=1, columnspan=2, padx=2, pady=5, sticky="w")
+    
+    ttk.Button(nav_frame, text="Previous", command=app.previous_violation).pack(side=tk.LEFT, padx=2)
+    ttk.Button(nav_frame, text="Next", command=app.next_violation).pack(side=tk.LEFT, padx=2)
+    
+    # Current mode display
+    app.review_mode_var = tk.StringVar(value="Mode: Ready to load violations")
+    mode_label = ttk.Label(cf, textvariable=app.review_mode_var, font=("TkDefaultFont", 9, "bold"))
+    mode_label.grid(row=0, column=3, rowspan=2, padx=10, pady=5, sticky="e")
+    
+    # Status label
+    app.review_status_var = tk.StringVar(value="No violations loaded")
+    status_label = ttk.Label(cf, textvariable=app.review_status_var)
+    status_label.grid(row=2, column=3, padx=10, pady=5, sticky="e")
+    
+    # Main display frame
+    display_frame = ttk.Frame(tab, style="Main.TFrame")
+    display_frame.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
+    display_frame.columnconfigure(0, weight=3)
+    display_frame.columnconfigure(1, weight=1)
+    display_frame.rowconfigure(0, weight=1)
+    
+    # Image display on left
+    img_frame = ttk.LabelFrame(display_frame, text="Violation Image", style="Main.TFrame")
+    img_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+    app.review_image_label = ttk.Label(img_frame, background='black')
+    app.review_image_label.pack(fill=tk.BOTH, expand=True)
+    
+    # Actions panel on right
+    action_frame = ttk.LabelFrame(display_frame, text="Review Actions")
+    action_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
+    
+    # File info
+    app.violation_info_var = tk.StringVar(value="No file selected")
+    ttk.Label(action_frame, textvariable=app.violation_info_var, wraplength=300).pack(fill=tk.X, padx=10, pady=10)
+    
+    # Decision buttons
+    decision_frame = ttk.Frame(action_frame)
+    decision_frame.pack(fill=tk.X, padx=10, pady=10)
+    
+    app.approve_btn = ttk.Button(decision_frame, text="Approve as Illegal", 
+               command=lambda: app.process_violation_decision(True))
+    app.approve_btn.pack(fill=tk.X, pady=5)
+    
+    app.decline_btn = ttk.Button(decision_frame, text="Decline as Legal", 
+               command=lambda: app.process_violation_decision(False))
+    app.decline_btn.pack(fill=tk.X, pady=5)
+    
+    # Statistics
+    stats_frame = ttk.LabelFrame(action_frame, text="Statistics")
+    stats_frame.pack(fill=tk.X, padx=10, pady=10)
+    
+    app.review_stats_var = tk.StringVar(value="Total: 0\nApproved: 0\nDeclined: 0")
+    ttk.Label(stats_frame, textvariable=app.review_stats_var).pack(fill=tk.X, padx=5, pady=5)
+    
+    return tab
 
 if __name__ == "__main__":
     root = tk.Tk()
